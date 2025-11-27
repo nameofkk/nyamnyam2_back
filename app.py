@@ -115,75 +115,23 @@ def fetch_restaurants_from_kakao(lat, lon, radius=3000, query="맛집"):
 # =========================
 # 카카오맵 상세페이지에서 실제 평점 가져오기 (스크래핑)
 # =========================
-def _extract_rating_from_json(obj):
-    """
-    Kakao place main/v JSON 전체를 훑으면서
-    0~5 사이의 score/rating 계열 숫자를 찾아서 대표 평점으로 추출
-    """
-    candidates = []
-
-    def walk(o):
-        if isinstance(o, dict):
-            for k, v in o.items():
-                # 중첩 구조는 재귀
-                if isinstance(v, (dict, list)):
-                    walk(v)
-                    continue
-
-                kl = str(k).lower()
-                if not any(s in kl for s in ("score", "rating", "avg")):
-                    continue
-
-                try:
-                    fv = float(v)
-                except (TypeError, ValueError):
-                    continue
-
-                # 0~5 사이만 평점 후보로
-                if 0 < fv <= 5:
-                    candidates.append(fv)
-        elif isinstance(o, list):
-            for item in o:
-                walk(item)
-
-    walk(obj)
-
-    if not candidates:
-        return None
-
-    # 여러 개 있으면 평균(또는 max) 택1
-    return sum(candidates) / len(candidates)
-
-
 def get_kakao_rating(place_id):
     """
     카카오맵 place_id로 실제 평점 가져오기
-    1순위: JSON API 전체를 훑어서 score/rating 후보 추출
-    2순위: HTML 파싱(em.num_rate)
-    실패하면 None
     """
-    # 1) JSON 기반 시도
-    try:
-        data = fetch_kakao_place_json(place_id)
-        rating = _extract_rating_from_json(data)
-        if rating is not None:
-            return float(rating)
-    except Exception as e:
-        print(f"[평점 JSON 스크래핑 오류] id={place_id} → {e}")
-
-    # 2) 기존 HTML 파싱 fallback
     try:
         url = f"https://place.map.kakao.com/{place_id}"
         html = requests.get(url, timeout=3).text
         soup = BeautifulSoup(html, "html.parser")
 
+        # 평점이 em.num_rate 안에 들어 있음
         score = soup.select_one("em.num_rate")
         if score:
             return float(score.get_text().strip())
-    except Exception as e:
-        print(f"[평점 HTML 스크래핑 오류] id={place_id} → {e}")
 
-    # 여기서는 아무 기본값 넣지 않고 None
+    except Exception as e:
+        print(f"[평점 스크래핑 오류] id={place_id} → {e}")
+
     return None
 
 
@@ -192,9 +140,9 @@ def get_kakao_rating(place_id):
 # =========================
 def fetch_restaurants_detailed(lat, lon, radius=1500):
     """
-    카카오 키워드 API로 주변 맛집(place_id 포함) 수집
-    - main/v JSON 평점 스크래핑은 중단 (404/차단 이슈 때문에)
-    - 대신 모든 가게를 기본 평점 3.5로 간주해서 점수 계산에만 사용
+    1) 카카오 키워드 API로 주변 맛집(place_id 포함) 수집
+    2) 각 place_id로 상세페이지 스크래핑 → 실제 평점 가져오기
+    3) 너무 낮은 평점(예: 2.5 미만)만 빼고 다 받아들임
     """
     if not KAKAO_KEY:
         print("⚠ KAKAO_REST_API_KEY 미설정")
@@ -231,9 +179,16 @@ def fetch_restaurants_detailed(lat, lon, radius=1500):
             if not place_id:
                 continue
 
-            # ⚠ main/v JSON 평점 스크래핑은 더 이상 사용하지 않고,
-            #    모든 가게를 '기본 3.5점짜리 가게'라고 가정.
-            rating = 3.5
+            # ⭐ 실제 평점 가져오기 시도
+            rating = get_kakao_rating(place_id)
+
+            # 1) 스크래핑 실패했으면 일단 4.0 기본값
+            if rating is None:
+                rating = 4.0
+
+            # 2) 너무 낮은 곳(2.5 미만)만 버리고 나머지는 수용
+            if rating < 2.5:
+                continue
 
             # 카테고리 단순화
             category_name = d.get("category_name")
@@ -248,7 +203,7 @@ def fetch_restaurants_detailed(lat, lon, radius=1500):
                 "lat": float(d.get("y")),
                 "lon": float(d.get("x")),
                 "category": category_simple,
-                "rating": rating,   # DB에 저장될 기본 평점
+                "rating": float(rating),
             })
 
         # 마지막 페이지면 중단
@@ -257,9 +212,8 @@ def fetch_restaurants_detailed(lat, lon, radius=1500):
 
         params["page"] += 1
 
-    print(f"[카카오★] 실시간 검색 매장 {len(collected)}개 수집 완료 (lat={lat}, lon={lon})")
+    print(f"[카카오★] 평점2.5+ 매장 {len(collected)}개 수집 완료 (lat={lat}, lon={lon})")
     return collected
-
 
 
 # =========================
@@ -2295,13 +2249,9 @@ from psycopg2.extras import RealDictCursor
 # =========================
 
 def build_menu_text(name, category):
-    """
-    대표 메뉴 한 줄 설명 (리뷰가 없을 때 기본값)
-    """
     if category:
-        return f"{name}은(는) {category} 위주의 인기 메뉴를 즐길 수 있는 곳이에요."
-    return f"{name}은(는) 다양한 메뉴를 편하게 즐길 수 있는 곳이에요."
-
+        return f"{category} 위주의 인기 메뉴를 즐길 수 있는 곳이에요."
+    return "다양한 메뉴를 즐길 수 있는 곳이에요."
 
 
 def build_keywords(category, rating, distance_km, preferred, review_text=None):
@@ -2372,209 +2322,65 @@ def build_summary_text(name, category, rating, distance_km):
 # =========================
 # 카카오맵 스크래핑 유틸
 # =========================
-def fetch_kakao_place_json(place_id):
-    """
-    카카오 place main/v JSON을 브라우저처럼 헤더를 달아서 요청
-    - JSON 파싱 실패 시 예외 발생
-    """
-    api_url = f"https://place.map.kakao.com/main/v/{place_id}"
-    headers = {
-        # 실제 브라우저 비슷하게 보내기
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0 Safari/537.36"
-        ),
-        "Referer": f"https://place.map.kakao.com/{place_id}",
-        "Accept": "application/json, text/plain, */*",
-    }
-
-    resp = requests.get(api_url, headers=headers, timeout=5)
-
-    if resp.status_code != 200:
-        raise ValueError(f"status={resp.status_code}")
-
-    text = resp.text.strip()
-    if not text:
-        raise ValueError("empty body")
-
-    # JSON이 아니면 여기서 에러 발생 → 호출한 쪽에서 잡음
-    return resp.json()
-
-
-def _normalize_url(u: str) -> str:
-    if not u:
-        return u
-    if u.startswith("//"):
-        return "https:" + u
-    if u.startswith("/"):
-        return "https://place.map.kakao.com" + u
-    return u
-
-
-def _is_map_thumbnail(u: str) -> bool:
-    if not u:
-        return False
-    ul = u.lower()
-
-    # 기본 로고/placeholder만 막기
-    if "noimg" in ul or "nodata" in ul or "placeholder" in ul or "logo" in ul:
-        return True
-
-    # 지도 이미지(staticmap)는 허용
-    return False
-
-
 
 def get_kakao_images(place_id, limit=5):
-    """
-    1순위: JSON(main/v)에서 mainphotourl 등 사진 URL
-    2순위: HTML 내 갤러리 이미지
-    3순위: 그 외 img 태그
-    -> staticmap(지도 썸네일) + placeholder(로고/사진없음)는 제외
-    """
+    url = f"https://place.map.kakao.com/{place_id}"
     urls = []
-
-    # 1) JSON에서 대표 사진 가져오기
     try:
-        data = fetch_kakao_place_json(place_id)
-        basic = (data.get("basicInfo") or data.get("basicinfo") or {})
+        html = requests.get(url, timeout=3).text
+        soup = BeautifulSoup(html, "html.parser")
 
-        photo_candidates = []
-
-        # mainphoto 관련 필드
-        for key in basic.keys():
-            if "mainphoto" in key.lower():
-                photo_candidates.append(basic[key])
-
-        # photo 블록
-        if "photo" in basic and isinstance(basic["photo"], dict):
-            lst = basic["photo"].get("list") or basic["photo"].get("photoList") or []
-            if isinstance(lst, list):
-                for item in lst[:5]:
-                    if not isinstance(item, dict):
-                        continue
-                    for k in ("orgurl", "url", "thumbnail"):
-                        v = item.get(k)
-                        if v:
-                            photo_candidates.append(v)
-
-        # JSON 전체에서 추가 이미지 URL
-        json_urls = _extract_image_urls_from_json(data)
-        photo_candidates.extend(json_urls)
-
-        for p in photo_candidates:
-            p = _normalize_url(p)
-            if not p or _is_map_thumbnail(p) or _is_placeholder_image(p):
+        photo_imgs = soup.select(
+            ".photo_area img, .photo_viewer img, .gallery_photo img, .link_photo img"
+        )
+        for img in photo_imgs:
+            src = img.get("src") or img.get("data-src")
+            if not src:
                 continue
-            if p not in urls:
-                urls.append(p)
+
+            if src.startswith("//"):
+                src = "https:" + src
+            elif src.startswith("/"):
+                src = "https://place.map.kakao.com" + src
+
+            if src not in urls:
+                urls.append(src)
             if len(urls) >= limit:
                 break
 
-    except Exception as e:
-        print(f"[이미지 JSON 스크래핑 오류] id={place_id} → {e}")
-
-
-    # 2) HTML 내 이미지 추가 수집 (JSON만으로 부족할 때)
-    if len(urls) < limit:
-        try:
-            url = f"https://place.map.kakao.com/{place_id}"
-            html = requests.get(url, timeout=3).text
-            soup = BeautifulSoup(html, "html.parser")
-
-            # 갤러리/사진 영역 우선
-            photo_imgs = soup.select(
-                ".photo_area img, .photo_viewer img, .gallery_photo img, .link_photo img"
-            )
-            for img in photo_imgs:
+        if not urls:
+            for img in soup.select("img"):
                 src = img.get("src") or img.get("data-src")
                 if not src:
                     continue
-                src = _normalize_url(src)
-                if not src or _is_map_thumbnail(src) or _is_placeholder_image(src):
-                    continue
+
+                if src.startswith("//"):
+                    src = "https:" + src
+                elif src.startswith("/"):
+                    src = "https://place.map.kakao.com" + src
+
                 if src not in urls:
                     urls.append(src)
                 if len(urls) >= limit:
                     break
 
-            # 아직 모자라면 페이지 내 모든 img 태그 스캔
-            if len(urls) < limit:
-                for img in soup.select("img"):
-                    src = img.get("src") or img.get("data-src")
-                    if not src:
-                        continue
-                    src = _normalize_url(src)
-                    if not src or _is_map_thumbnail(src) or _is_placeholder_image(src):
-                        continue
-                    if src not in urls:
-                        urls.append(src)
-                    if len(urls) >= limit:
-                        break
+        if not urls:
+            og = soup.find("meta", property="og:image")
+            if og and og.get("content"):
+                urls.append(og["content"])
 
-        except Exception as e:
-            print(f"[이미지 HTML 스크래핑 오류] id={place_id} → {e}")
+        print(f"[이미지 URL] place_id={place_id} → {urls[:limit]}")
 
-    # 3) 최종 정리 + 로그
-    urls = [u for u in urls if u and not _is_map_thumbnail(u) and not _is_placeholder_image(u)]
+    except Exception as e:
+        print(f"[이미지 스크래핑 오류] id={place_id} → {e}")
 
-    dedup = []
-    seen = set()
-    for u in urls:
-        if u in seen:
-            continue
-        seen.add(u)
-        dedup.append(u)
-        if len(dedup) >= limit:
-            break
-
-    print(f"[이미지 URL] place_id={place_id} → {dedup}")
-    return dedup
-
+    return urls[:limit]
 
 
 def get_kakao_image(place_id):
     images = get_kakao_images(place_id, limit=1)
     return images[0] if images else None
 
-def _is_placeholder_image(u: str) -> bool:
-    """
-    Kakao 기본 로고 / no-image 같은 플레이스홀더를 최대한 걸러내기 위한 휴리스틱
-    실제 URL을 직접 확인할 수 없으니,
-    'kakaomap' + 'noimg/nodata/logo' 패턴 위주로만 필터링
-    """
-    if not u:
-        return False
-    ul = u.lower()
-    if "kakaomap" in ul and any(x in ul for x in ("noimg", "nodata", "logo", "default")):
-        return True
-    return False
-
-def _extract_image_urls_from_json(obj):
-    urls = []
-
-    def walk(o):
-        if isinstance(o, dict):
-            for k, v in o.items():
-                if isinstance(v, (dict, list)):
-                    walk(v)
-                    continue
-
-                # 문자열 + http + 이미지 확장자
-                if isinstance(v, str):
-                    s = v.strip()
-                    sl = s.lower()
-                    if s.startswith("http") and any(ext in sl for ext in (".jpg", ".jpeg", ".png", ".webp")):
-                        # 지도/로고 제외
-                        if not _is_map_thumbnail(s) and not _is_placeholder_image(s):
-                            urls.append(s)
-        elif isinstance(o, list):
-            for item in o:
-                walk(item)
-
-    walk(obj)
-    return urls
 
 def summarize_review(place_id, max_len=100, empty_text="리뷰 정보 없음"):
     url = f"https://place.map.kakao.com/{place_id}"
@@ -2599,89 +2405,42 @@ def summarize_review(place_id, max_len=100, empty_text="리뷰 정보 없음"):
 
 
 def get_kakao_basic_info(place_id):
-    """
-    주소 / 영업시간 / 영업중 여부 추정
-    1순위: JSON(main/v)
-    2순위: 기존 HTML 파싱
-    """
-    url_html = f"https://place.map.kakao.com/{place_id}"
+    url = f"https://place.map.kakao.com/{place_id}"
     address = None
     open_info = None
     is_open = None
 
-    # 1) JSON 시도
     try:
-        data = fetch_kakao_place_json(place_id)
-        basic = (data.get("basicInfo") or data.get("basicinfo") or {})
-
-        # 주소 후보
-        addr_candidates = [
-            basic.get("address"),
-            basic.get("addr"),
-            basic.get("addr1"),
-            basic.get("fullAddress"),
-            basic.get("roadAddress"),
-        ]
-        for a in addr_candidates:
-            if a:
-                address = a.strip()
-                break
-
-        # 영업시간/실시간 상태 정보
-        open_info_candidates = []
-        openhour = basic.get("openHour") or basic.get("openhour") or {}
-        if isinstance(openhour, dict):
-            for k in ("realtime", "text", "period", "info"):
-                v = openhour.get(k)
-                if v:
-                    open_info_candidates.append(str(v))
-
-        for t in open_info_candidates:
-            t = str(t).strip()
-            if not t:
-                continue
-            if not open_info:
-                open_info = t
-            if "영업중" in t:
-                is_open = True
-            if any(x in t for x in ["영업시간 종료", "영업 종료", "휴무"]):
-                is_open = False
-
-    except Exception as e:
-        print(f"[기본정보 JSON 스크래핑 오류] id={place_id} → {e}")
-
-
-    # 2) 주소/영업시간이 여전히 없으면 HTML fallback
-    try:
-        html = requests.get(url_html, timeout=3).text
+        html = requests.get(url, timeout=3).text
         soup = BeautifulSoup(html, "html.parser")
 
-        if not address:
-            addr_el = soup.select_one(
-                ".location_detail .txt_address, .tit_address, .addr, .txt_address"
-            )
-            if addr_el:
-                address = addr_el.get_text().strip()
+        addr_el = soup.select_one(
+            ".location_detail .txt_address, .tit_address, .addr, .txt_address"
+        )
+        if addr_el:
+            address = addr_el.get_text().strip()
 
-        if not open_info:
-            time_el = soup.select_one(
-                ".openhour_wrap .time_operation, .info_oper, .txt_operation"
-            )
-            if time_el:
-                open_info = time_el.get_text().strip()
+        time_el = soup.select_one(
+            ".openhour_wrap .time_operation, .info_oper, .txt_operation"
+        )
+        if time_el:
+            open_info = time_el.get_text().strip()
 
-        # 영업중 / 종료 여부 추가 추정
-        text_block = soup.get_text(" ", strip=True)
-        if "영업중" in text_block and is_open is None:
+        text_block = ""
+        if time_el:
+            text_block += time_el.get_text(" ", strip=True) + " "
+        all_text = soup.get_text(" ", strip=True)
+        text_block += all_text
+
+        if "영업중" in text_block:
             is_open = True
-        elif any(x in text_block for x in ["영업시간 종료", "영업 종료", "휴무"]) and is_open is None:
+        elif "영업시간 종료" in text_block or "영업 종료" in text_block or "휴무" in text_block:
             is_open = False
 
     except Exception as e:
-        print(f"[기본정보 HTML 스크래핑 오류] id={place_id} → {e}")
+        print(f"[기본정보 스크래핑 오류] id={place_id} → {e}")
 
     return address, open_info, is_open
-
 
 
 # =========================
