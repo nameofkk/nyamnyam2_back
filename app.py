@@ -327,7 +327,13 @@ def calculate_score(user, restaurant, last_recent_names):
 def search_google_places(lat, lon, radius_m=1500, max_results=20):
     """
     Google Places 'searchNearby'로 (lat, lon) 주변 음식점 목록을 가져온다.
-    - 반환 형식: [ { name, lat, lon, rating, address, open_info, category, photo_url, distance_km }, ... ]
+    - 반환 형식: [
+        {
+          name, lat, lon, rating,
+          address, open_info, category,
+          photo_url, distance_km, reviews
+        }, ...
+      ]
     """
     if not GOOGLE_PLACES_API_KEY:
         print("⚠ GOOGLE_PLACES_API_KEY가 설정되어 있지 않습니다.")
@@ -357,14 +363,14 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
 
     body = {
         "includedTypes": ["restaurant"],  # 음식점만
-        "maxResultCount": max_results,    # 한 번에 최대 몇 개까지 받을지
+        "maxResultCount": max_results,
         "locationRestriction": {
             "circle": {
                 "center": {
                     "latitude": lat,
                     "longitude": lon,
                 },
-                "radius": float(radius_m),  # 반경(미터)
+                "radius": float(radius_m),
             }
         },
     }
@@ -383,6 +389,8 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
 
     results = []
 
+    # 🔹 여기 for 루프 안에서 한 곳씩 results에 넣어야 하는데,
+    # 들여쓰기가 깨져 있어서 지금은 마지막 한 곳만 들어가고 있었음.
     for p in raw_places:
         # 이름
         name_info = p.get("displayName") or {}
@@ -397,6 +405,7 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
 
         # 평점
         rating = p.get("rating")
+
         # 주소
         address = p.get("shortFormattedAddress") or ""
 
@@ -406,51 +415,46 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
         if opening:
             weekday_desc = opening.get("weekdayDescriptions")
             if weekday_desc:
-                # 예: ["월요일: 11:00 – 22:00", "화요일: ..."] 중 첫 줄만 사용
+                # 예: ["Monday: 11:00 – 22:00", ...] 중 첫 줄만 사용
                 open_info = weekday_desc[0]
 
-    # 카테고리(대표 타입명)
-    raw_cat = p.get("primaryTypeDisplayName") or ""
-
-    # Google Places New 포맷은 보통 {"text": "Korean Restaurant", "languageCode": "en"} 형태
-    if isinstance(raw_cat, dict):
-        en_cat = raw_cat.get("text", "")
-    else:
-        en_cat = str(raw_cat) if raw_cat is not None else ""
-
-    # 영어 카테고리를 한글로 매핑 (없으면 원문 그대로 사용)
-    category = GOOGLE_CATEGORY_KR.get(en_cat, en_cat)
-
-    # 사진 1장 URL 만들기
-    photo_url = None
-    photos = p.get("photos") or []
-    if photos:
-        # photo 리소스 이름 예: "places/ChIJN1t_tDeuEmsRUsoyG83frY4/photos/..."
-        photo_name = photos[0].get("name")
-        if photo_name:
-            photo_url = (
-                f"https://places.googleapis.com/v1/{photo_name}/media"
-                f"?maxHeightPx=400&maxWidthPx=600&key={GOOGLE_PLACES_API_KEY}"
-            )
-
-    # 현재 위치와 거리(km)
-    distance_km = round(calc_distance(lat, lon, plat, plon), 1)
-
-    # 🔹 Google Places 리뷰 텍스트 추출
-    reviews = []
-    raw_reviews = p.get("reviews") or []
-    for r in raw_reviews:
-        # New Places API 포맷 고려
-        # 보통 {"text": {"text": "...", "languageCode": "en"}} 형태
-        text_obj = r.get("originalText") or r.get("text")
-        if isinstance(text_obj, dict):
-            txt = text_obj.get("text", "")
+        # 카테고리(대표 타입명)
+        raw_cat = p.get("primaryTypeDisplayName") or ""
+        # 예: {"text": "Korean Restaurant", "languageCode": "en"}
+        if isinstance(raw_cat, dict):
+            en_cat = raw_cat.get("text", "")
         else:
-            txt = text_obj or ""
-        if txt:
-            reviews.append(txt.replace("\n", " ").strip())
+            en_cat = str(raw_cat) if raw_cat is not None else ""
+        category = GOOGLE_CATEGORY_KR.get(en_cat, en_cat)
 
+        # 사진 1장 URL
+        photo_url = None
+        photos = p.get("photos") or []
+        if photos:
+            photo_name = photos[0].get("name")
+            if photo_name:
+                photo_url = (
+                    f"https://places.googleapis.com/v1/{photo_name}/media"
+                    f"?maxHeightPx=400&maxWidthPx=600&key={GOOGLE_PLACES_API_KEY}"
+                )
 
+        # 현재 위치와 거리(km)
+        distance_km = round(calc_distance(lat, lon, plat, plon), 1)
+
+        # 🔹 Google Places 리뷰 텍스트 추출
+        reviews = []
+        raw_reviews = p.get("reviews") or []
+        for r in raw_reviews:
+            # 보통 {"text": {"text": "...", "languageCode": "en"}} 형태
+            text_obj = r.get("originalText") or r.get("text")
+            if isinstance(text_obj, dict):
+                txt = text_obj.get("text", "")
+            else:
+                txt = text_obj or ""
+            if txt:
+                reviews.append(txt.replace("\n", " ").strip())
+
+        # 한 장소 정보 하나 push
         results.append({
             "name": name,
             "lat": plat,
@@ -461,9 +465,8 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
             "category": category,
             "photo_url": photo_url,
             "distance_km": distance_km,
-            "reviews": reviews,  # 🔹 이제 정상적으로 문자열 리스트가 들어감
+            "reviews": reviews,
         })
-
 
     return results
 
