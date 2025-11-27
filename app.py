@@ -2409,6 +2409,9 @@ def build_keywords(category, rating, distance_km, preferred, review_text=None):
         if "분위기" in t or "인테리어" in t:
             tags.append("분위기좋음")
 
+    tags = [t for t in tags if isinstance(t, str)]
+
+
     tags = list(dict.fromkeys(tags))
     return tags
 
