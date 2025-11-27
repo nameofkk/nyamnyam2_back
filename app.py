@@ -302,38 +302,59 @@ def kakao_category_search(category_group_code, x, y, radius=1500, size=15):
     return resp.json()
 
 
-def match_kakao_place_by_location(lat, lon, radius=50):
-    url = "https://dapi.kakao.com/v2/local/search/keyword.json"
-    headers = {
-        "Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"
-    }
-    params = {
-        "query": "",
-        "x": lon,
-        "y": lat,
-        "radius": radius,
-        "sort": "distance",
-        "category_group_code": "FD6"
-    }
+def match_kakao_place_by_location(name, lat, lon, radius=100):
+    """
+    Google Places에서 받은 가게 이름 + 좌표를 가지고
+    카카오맵 place_id를 찾는다.
 
+    1순위: 키워드 검색(query=이름, sort=distance)
+    2순위: 결과 없으면 FD6 카테고리 검색으로 근처 1개라도 잡기
+    """
+    if not KAKAO_REST_API_KEY:
+        return None, None, None
+
+    # 1) 이름 기반 키워드 검색
+    if name:
+        url = "https://dapi.kakao.com/v2/local/search/keyword.json"
+        headers = {
+            "Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"
+        }
+        params = {
+            "query": name,
+            "x": lon,
+            "y": lat,
+            "radius": radius,
+            "sort": "distance",
+            "category_group_code": "FD6"
+        }
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            docs = data.get("documents", [])
+            if docs:
+                doc = docs[0]
+                place_name = doc.get("place_name")
+                place_id = doc.get("id")
+                address = doc.get("road_address_name") or doc.get("address_name")
+                return place_name, place_id, address
+        except Exception as e:
+            print("[KAKAO_MATCH_KEYWORD_ERROR]", e)
+
+    # 2) 이름 기반 검색 실패 시, 카테고리(FD6)로 근처 한 곳이라도
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=5)
-        resp.raise_for_status()
+        cat_data = kakao_category_search("FD6", x=lon, y=lat, radius=radius, size=1)
+        docs = cat_data.get("documents", [])
+        if docs:
+            doc = docs[0]
+            place_name = doc.get("place_name")
+            place_id = doc.get("id")
+            address = doc.get("road_address_name") or doc.get("address_name")
+            return place_name, place_id, address
     except Exception as e:
-        print("[KAKAO_MATCH_ERROR]", e)
-        return None, None, None
+        print("[KAKAO_MATCH_CATEGORY_ERROR]", e)
 
-    data = resp.json()
-    docs = data.get("documents", [])
-    if not docs:
-        return None, None, None
-
-    doc = docs[0]
-    name = doc.get("place_name")
-    place_id = doc.get("id")
-    address = doc.get("road_address_name") or doc.get("address_name")
-
-    return name, place_id, address
+    return None, None, None
 
 
 def get_kakao_basic_info(place_id):
@@ -905,12 +926,11 @@ def api_reco():
         if plat is None or plon is None:
             continue
 
-        name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(plat, plon)
+        raw_name = p.get("name")
+        name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(raw_name, plat, plon)
         if not kakao_place_id:
             continue
 
-        raw_name = p.get("name")
-        name = name_ko or raw_name or "이름 없음"
         rating = p.get("rating")
         distance_km = p.get("distance_km")
         address = kakao_addr or p.get("address") or ""
@@ -920,6 +940,8 @@ def api_reco():
 
         reviews = p.get("reviews") or []
         review_texts = [r for r in reviews if isinstance(r, str)]
+
+        name = name_ko or raw_name or "이름 없음"
 
         if review_texts:
             first = review_texts[0].replace("\\n", " ").strip()
