@@ -49,6 +49,8 @@ GOOGLE_CATEGORY_KR = {
     "Seafood Restaurant": "해산물요리",
     "Noodle Shop": "면요리",
     "Steak House": "스테이크하우스",
+    "Restaurant": "음식점",
+
     # 필요하면 계속 추가 가능
 }
 
@@ -2631,6 +2633,47 @@ def get_kakao_basic_info(place_id):
 
     return address, open_info, is_open
 
+def match_kakao_place_by_location(lat, lon):
+    """
+    Google Places 결과의 좌표(lat, lon)를 이용해
+    가장 가까운 카카오 음식점 1개를 찾아서
+    (한글 가게명, place_id, 주소)를 반환한다.
+    """
+    if not KAKAO_KEY:
+        return None, None, None
+
+    url = "https://dapi.kakao.com/v2/local/search/category.json"
+    headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
+    params = {
+        "category_group_code": "FD6",  # 음식점
+        "x": lon,
+        "y": lat,
+        "radius": 70,                  # 70m 반경 안에서
+        "size": 3,
+        "sort": "distance",            # 가장 가까운 순
+    }
+
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=3)
+        if resp.status_code != 200:
+            print("[KAKAO_MATCH_ERROR]", resp.text)
+            return None, None, None
+
+        docs = resp.json().get("documents", [])
+        if not docs:
+            return None, None, None
+
+        d = docs[0]  # 가장 가까운 한 곳
+        name_ko = d.get("place_name")
+        kakao_id = d.get("id")
+        addr = d.get("road_address_name") or d.get("address_name")
+
+        return name_ko, kakao_id, addr
+    except Exception as e:
+        print("[KAKAO_MATCH_EXCEPTION]", e)
+        return None, None, None
+
+
 
 # =========================
 # IP 기반 위치 API
@@ -2681,13 +2724,18 @@ def api_ip_location():
 # /api/reco 메인 추천 API (Google Places 버전)
 # =========================
 
+# =========================
+# /api/reco 메인 추천 API (Google Places + 카카오 이름 매칭 버전)
+# =========================
+
 @app.route("/api/reco", methods=["POST"])
 def api_reco():
     """
     위치 기반 맛집 추천 (Google Places 사용)
     - 클라이언트에서 보낸 위도/경도를 기준으로 주변 음식점 검색
-    - 상위 몇 개 중에서 최대 3개를 골라 카드용 JSON으로 반환
-    - 프론트(reco.html)는 기존 구조 그대로 사용 가능하도록 필드 이름 맞춤
+    - 평점/거리 기반으로 상위 후보를 고르고, 그 중 3곳만 랜덤 노출
+    - 카드용 JSON 필드 구조는 기존 reco.html 과 동일
+      (name, category, rating, menu, summary, place_id, image_url, distance_km, keywords, images, address, open_info)
     """
     data = request.get_json() or {}
     phone = data.get("phone") or ""
@@ -2710,6 +2758,17 @@ def api_reco():
         # 주변에 아무 것도 안 나왔을 때
         return jsonify([])
 
+    # 2-1) 같은 가게(이름+주소 기준) 중복 제거
+    unique_places = []
+    seen_keys = set()
+    for p in places:
+        key = (p.get("name"), p.get("address"))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        unique_places.append(p)
+    places = unique_places
+
     # 3) 평점 & 거리 기반 간단 점수 계산 후 상위 몇 개만 사용
     scored = []
     for p in places:
@@ -2722,17 +2781,37 @@ def api_reco():
     # 점수 높은 순으로 정렬
     scored.sort(reverse=True, key=lambda x: x[0])
 
-    # 상위에서 최대 5개 정도만 후보로 보고
+    # 상위에서 최대 50개 정도만 후보로 보고
     top_candidates = [p for _, p in scored[:50]]
 
     # 이 중에서 최대 3개만 노출 (랜덤 셔플)
     random.shuffle(top_candidates)
     picked = top_candidates[:3]
 
+    # 4) 각 후보마다 카카오맵 이름/ID 매칭 → name_ko, kakao_place_id, address 보정
+    for p in picked:
+        plat = p.get("lat")
+        plon = p.get("lon")
+        if plat is None or plon is None:
+            continue
+
+        # match_kakao_place_by_location 은 앞에서 정의해 둔 헬퍼 함수
+        name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(plat, plon)
+        if name_ko:
+            p["name_ko"] = name_ko
+        if kakao_place_id:
+            p["kakao_place_id"] = kakao_place_id
+        if kakao_addr:
+            p["address"] = kakao_addr
+
     result = []
 
     for p in picked:
-        name = p["name"]
+        # 카카오 이름이 있으면 우선 사용, 없으면 구글 이름
+        raw_name = p.get("name")
+        name_ko = p.get("name_ko")
+        name = name_ko or raw_name or "이름 없음"
+
         category = p.get("category") or ""
         rating = p.get("rating")
         distance_km = p.get("distance_km")
@@ -2740,16 +2819,22 @@ def api_reco():
         open_info = p.get("open_info") or ""
         photo_url = p.get("photo_url")
 
+        kakao_place_id = p.get("kakao_place_id") or ""
+
         # 🔹 리뷰 리스트 (search_google_places에서 넣어준 값)
         reviews = p.get("reviews") or []
         review_texts = [r for r in reviews if isinstance(r, str)]
 
-        # 🔹 리뷰 기반 한줄 요약
+        # 🔹 리뷰 기반 한줄 요약 (한글 리뷰일 때만 사용)
         if review_texts:
             first = review_texts[0].replace("\n", " ").strip()
-            if len(first) > 80:
-                first = first[:80].rstrip() + "..."
-            summary = first
+            # 한글이 한 글자라도 있으면 그대로 사용, 아니면 기본 한국어 요약
+            if re.search(r"[가-힣]", first):
+                if len(first) > 80:
+                    first = first[:80].rstrip() + "..."
+                summary = first
+            else:
+                summary = build_summary_text(name, category, rating, distance_km)
         else:
             summary = build_summary_text(name, category, rating, distance_km)
 
@@ -2776,12 +2861,12 @@ def api_reco():
         # 🔹 프론트(reco.html)에서 사용하는 필드 구조에 맞춰줌
         result.append(
             {
-                "name": name,
+                "name": name,                         # 카카오 한글 이름 우선
                 "category": category,
                 "rating": rating,
                 "menu": menu,
                 "summary": summary,
-                "place_id": "",
+                "place_id": kakao_place_id,           # 카카오 place_id → 카카오맵으로 이동에 사용
                 "image_url": photo_url,
                 "distance_km": distance_km,
                 "keywords": keywords,
@@ -2792,6 +2877,7 @@ def api_reco():
         )
 
     return jsonify(result)
+
 
 
 @app.route("/debug/restaurants")
