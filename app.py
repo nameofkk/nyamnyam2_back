@@ -2413,15 +2413,17 @@ def _normalize_url(u: str) -> str:
 
 
 def _is_map_thumbnail(u: str) -> bool:
-    """지도 썸네일(정적 지도 이미지)은 제외하기 위해 필터링"""
     if not u:
         return False
     ul = u.lower()
-    if "staticmap.kakao.com" in ul:
+
+    # 기본 로고/placeholder만 막기
+    if "noimg" in ul or "nodata" in ul or "placeholder" in ul or "logo" in ul:
         return True
-    if "map.kakao.com" in ul and "staticmap" in ul:
-        return True
+
+    # 지도 이미지(staticmap)는 허용
     return False
+
 
 
 def get_kakao_images(place_id, limit=5):
