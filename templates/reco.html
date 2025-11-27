@@ -68,6 +68,7 @@
     #loading {
       margin-top: 32px;
       text-align: center;
+      padding: 0 16px;
     }
 
     .spinner {
@@ -80,10 +81,18 @@
       animation: spin 0.9s linear infinite;
     }
 
-    #loading p {
+    #loading-main {
       margin: 0;
       font-size: 14px;
       color: #777;
+    }
+
+    .loading-fact {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #999;
+      line-height: 1.5;
+      min-height: 2.4em; /* 두 줄 정도 공간 확보해서 깜빡임 줄이기 */
     }
 
     @keyframes spin {
@@ -121,6 +130,19 @@
       display: flex;
       flex-direction: column;
     }
+
+    .address {
+  font-size: 12px;
+  color: #777;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+.open-info {
+  font-size: 11px;
+  color: #999;
+  margin-top: 2px;
+}
+
 
     /* 반응 오버레이 */
     .reaction-overlay {
@@ -345,7 +367,8 @@
 
     <div id="loading">
       <div class="spinner"></div>
-      <p>AI가 주변 맛집을 분석 중입니다...</p>
+      <p id="loading-main">AI가 주변 맛집을 분석 중입니다...</p>
+      <p id="loading-fact" class="loading-fact"></p>
     </div>
 
     <div id="cards"></div>
@@ -356,18 +379,55 @@
     const timeOfDay = "{{ time }}";
 
     const loadingEl = document.getElementById("loading");
-    const loadingTextEl = loadingEl.querySelector("p");
+    const loadingMainEl = document.getElementById("loading-main");
+    const loadingFactEl = document.getElementById("loading-fact");
     const cardsEl = document.getElementById("cards");
 
-    function setLoadingText(text) {
-      loadingEl.style.display = "block";
-      loadingTextEl.innerText = text;
+    // 음식 관련 잡지식들
+    const funFacts = [
+      "한국인은 1년에 라면을 1인당 70개 이상 먹는다고 알려져 있어요.",
+      "짜장면은 중국 본토보다 한국에서 더 발전한 '중화요리' 메뉴예요.",
+      "김치는 세계 5대 건강식으로 자주 언급되는 대표 발효 음식입니다.",
+      "라면 면발이 노란색인 건 달걀 때문이 아니라 밀가루와 유화제의 색이에요.",
+      "된장찌개와 김치찌개는 실제로 한국인이 가장 자주 먹는 집밥 메뉴 상위권이에요.",
+      "짜글이·전골류는 밥반찬이면서도 안주로도 사랑받는 한국식 '하이브리드' 메뉴입니다.",
+      "국밥 집에서 '말아주세요'라고 하면 밥과 국을 미리 섞어주는 옛날 방식 주문이에요."
+    ];
+
+    let factTimer = null;
+
+function setLoadingText(text) {
+  if (loadingMainEl) {
+    loadingMainEl.innerText = text;
+  }
+  // ✔ 더 이상 loadingEl.style.display = "block"; 을 실행하지 않음
+  //   (이게 여러 번 실행될 때 화면이 리셋되어 잡지식이 사라지고 있었음)
+}
+
+    function startFunFacts() {
+      if (!loadingFactEl || funFacts.length === 0) return;
+
+      let idx = 0;
+      loadingFactEl.innerText = funFacts[idx];
+
+      factTimer = setInterval(() => {
+        idx = (idx + 1) % funFacts.length;
+        loadingFactEl.innerText = funFacts[idx];
+      }, 4000); // 4초마다 변경
+    }
+
+    function stopFunFacts() {
+      if (factTimer) {
+        clearInterval(factTimer);
+        factTimer = null;
+      }
     }
 
     document.addEventListener("DOMContentLoaded", start);
 
     function start() {
       console.log("[RECO] start()");
+      startFunFacts();
 
       if (!navigator.geolocation) {
         setLoadingText("위치 정보를 지원하지 않습니다. 기본 위치로 추천합니다.");
@@ -438,6 +498,7 @@
         .catch((err) => {
           console.error("[RECO] API 오류:", err);
           setLoadingText("추천 정보를 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.");
+          // 에러가 나도 잡지식은 계속 돌아가게 그대로 둠
         });
     }
 
@@ -446,11 +507,15 @@
 
       if (!Array.isArray(data) || data.length === 0) {
         setLoadingText("근처 추천 맛집을 찾지 못했습니다.");
+        // 이런 경우에도 로딩은 끝난 상태이니 잡지식은 멈추는 편이 자연스러움
+        stopFunFacts();
         cardsEl.style.display = "none";
         return;
       }
 
       loadingEl.style.display = "none";
+      stopFunFacts();
+
       cardsEl.style.display = "flex";
       cardsEl.innerHTML = "";
 
@@ -490,6 +555,10 @@
           "&name=" +
           encodeURIComponent(item.name || "");
 
+
+const address = item.address ? item.address : "주소 정보 없음";
+const openInfo = item.open_info ? item.open_info : "";
+
         card.innerHTML = `
           <div class="reaction-overlay">
             <div class="reaction-emoji">😆</div>
@@ -516,7 +585,10 @@
             <div class="kakao-preview">
               ${kakaoInfo}
             </div>
-
+            <div class="menu">대표 메뉴: ${item.menu || '정보 없음'}</div>
+            <div class="summary">${item.summary || ''}</div>
+            <div class="address">${address}</div>
+            ${openInfo ? `<div class="open-info">${openInfo}</div>` : ''}
             <div class="bottom-actions">
               <div class="btn-row">
                 <button class="btn btn-like">👍 좋아요</button>
