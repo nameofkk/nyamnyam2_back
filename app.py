@@ -407,38 +407,47 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
                 # 예: ["월요일: 11:00 – 22:00", "화요일: ..."] 중 첫 줄만 사용
                 open_info = weekday_desc[0]
 
-        # 카테고리(대표 타입명)
-        en_cat = p.get("primaryTypeDisplayName") or ""
-        category = GOOGLE_CATEGORY_KR.get(en_cat, en_cat)
-        # 사진 1장 URL 만들기
-        photo_url = None
-        photos = p.get("photos") or []
-        if photos:
-            # photo 리소스 이름 예: "places/ChIJN1t_tDeuEmsRUsoyG83frY4/photos/..."
-            photo_name = photos[0].get("name")
-            if photo_name:
-                photo_url = (
-                    f"https://places.googleapis.com/v1/{photo_name}/media"
-                    f"?maxHeightPx=400&maxWidthPx=600&key={GOOGLE_PLACES_API_KEY}"
-                )
-        # 현재 위치와 거리(km)
-        # 현재 위치와 거리(km)
-        distance_km = round(calc_distance(lat, lon, plat, plon), 1)
+    # 카테고리(대표 타입명)
+    raw_cat = p.get("primaryTypeDisplayName") or ""
 
-        # 🔹 Google Places 리뷰 텍스트 추출
-        reviews = []
-        raw_reviews = p.get("reviews") or []
-        for r in raw_reviews:
-            # New Places API 포맷 고려
-            # 보통 {"text": {"text": "...", "languageCode": "en"}} 형태
-            text_obj = r.get("originalText") or r.get("text")
-            if isinstance(text_obj, dict):
-                txt = text_obj.get("text", "")
-            else:
-                txt = text_obj or ""
-            if txt:
-                # 줄바꿈 제거해서 한 줄로
-                reviews.append(txt.replace("\n", " ").strip())
+    # Google Places New 포맷은 보통 {"text": "Korean Restaurant", "languageCode": "en"} 형태
+    if isinstance(raw_cat, dict):
+        en_cat = raw_cat.get("text", "")
+    else:
+        en_cat = str(raw_cat) if raw_cat is not None else ""
+
+    # 영어 카테고리를 한글로 매핑 (없으면 원문 그대로 사용)
+    category = GOOGLE_CATEGORY_KR.get(en_cat, en_cat)
+
+    # 사진 1장 URL 만들기
+    photo_url = None
+    photos = p.get("photos") or []
+    if photos:
+        # photo 리소스 이름 예: "places/ChIJN1t_tDeuEmsRUsoyG83frY4/photos/..."
+        photo_name = photos[0].get("name")
+        if photo_name:
+            photo_url = (
+                f"https://places.googleapis.com/v1/{photo_name}/media"
+                f"?maxHeightPx=400&maxWidthPx=600&key={GOOGLE_PLACES_API_KEY}"
+            )
+
+    # 현재 위치와 거리(km)
+    distance_km = round(calc_distance(lat, lon, plat, plon), 1)
+
+    # 🔹 Google Places 리뷰 텍스트 추출
+    reviews = []
+    raw_reviews = p.get("reviews") or []
+    for r in raw_reviews:
+        # New Places API 포맷 고려
+        # 보통 {"text": {"text": "...", "languageCode": "en"}} 형태
+        text_obj = r.get("originalText") or r.get("text")
+        if isinstance(text_obj, dict):
+            txt = text_obj.get("text", "")
+        else:
+            txt = text_obj or ""
+        if txt:
+            reviews.append(txt.replace("\n", " ").strip())
+
 
         results.append({
             "name": name,
