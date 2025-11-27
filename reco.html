@@ -131,6 +131,19 @@
       flex-direction: column;
     }
 
+    .address {
+  font-size: 12px;
+  color: #777;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+.open-info {
+  font-size: 11px;
+  color: #999;
+  margin-top: 2px;
+}
+
+
     /* 반응 오버레이 */
     .reaction-overlay {
       position: absolute;
@@ -182,17 +195,29 @@
       background: #f2f3f6;
     }
 
+    /* ✅ 슬라이더 컨테이너 */
     .thumb-inner {
       width: 100%;
       height: 100%;
-      overflow: hidden;
+      display: flex;
+      flex-direction: row;
+      overflow-x: auto;
+      scroll-snap-type: x mandatory;
+      -webkit-overflow-scrolling: touch;
     }
 
+    .thumb-inner::-webkit-scrollbar {
+      display: none;
+    }
+
+    /* ✅ 슬라이드 한 장 */
     .main-photo {
+      flex: 0 0 100%;
       width: 100%;
       height: 100%;
       object-fit: cover;
       display: block;
+      scroll-snap-align: center;
       transform: scale(1.03);
     }
 
@@ -343,12 +368,12 @@
 <body>
   <div class="page-wrap">
     <div class="header">
-      <div class="header-title">오늘의 맛집 추천</div>
-      <div class="header-sub">{{ phone }}님을 위한 {{ time }} 추천 3곳</div>
+      <div class="header-title">냠냠, 오늘의 맛집 추천🍚</div>
+      <div class="header-sub">냠냠이가 직접 선정한 {{ time }} 맛집 추천 3곳!</div>
       <div class="header-pill">
         <span>AI 위치 기반 추천</span>
         <span>·</span>
-        <span>카카오맵 연동</span>
+        <span>카카오맵·구글맵 연동</span>
       </div>
     </div>
 
@@ -527,6 +552,12 @@ function setLoadingText(text) {
           item.image_url ||
           "https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/thumnail.png";
 
+                  // ✅ 슬라이더용 이미지 배열 (없으면 대표 1장만)
+        const images =
+          (item.images && item.images.length > 0)
+            ? item.images
+            : [mainImage];
+
         const kakaoLines = [];
         if (item.address) kakaoLines.push("📍 " + item.address);
         if (item.open_info) kakaoLines.push("⏰ " + item.open_info);
@@ -542,6 +573,10 @@ function setLoadingText(text) {
           "&name=" +
           encodeURIComponent(item.name || "");
 
+
+const address = item.address ? item.address : "주소 정보 없음";
+const openInfo = item.open_info ? item.open_info : "";
+
         card.innerHTML = `
           <div class="reaction-overlay">
             <div class="reaction-emoji">😆</div>
@@ -549,10 +584,16 @@ function setLoadingText(text) {
 
           <div class="thumb">
             <div class="thumb-inner">
-              <img class="main-photo" src="${mainImage}" alt="${item.name || ''}">
+              ${images
+                .map(
+                  (src) =>
+                    `<img class="main-photo" src="${src}" alt="${item.name || ''}">`
+                )
+                .join("")}
             </div>
             ${distanceText ? `<div class="thumb-badge">${distanceText}</div>` : ""}
           </div>
+
 
           <div class="card-body">
             <div class="card-title">${item.name || ""}</div>
@@ -568,7 +609,6 @@ function setLoadingText(text) {
             <div class="kakao-preview">
               ${kakaoInfo}
             </div>
-
             <div class="bottom-actions">
               <div class="btn-row">
                 <button class="btn btn-like">👍 좋아요</button>
@@ -619,16 +659,15 @@ function setLoadingText(text) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           phone: phone,
-          place_id: item.place_id,
-          name: item.name,
+          restaurant_name: item.name,  // ✅ 백엔드에서 우선 사용하는 필드
           category: item.category,
-          like: isLike,
-          time_of_day: timeOfDay,
+          is_good: isLike,             // ✅ 백엔드에서 읽는 필드명
         }),
       })
+
         .then((r) => r.json())
         .then((res) => {
-          if (res && res.ok) {
+          if (res && res.result === "ok") {
             if (isLike) {
               likeBtn.innerText = "👍 반영됨";
             } else {
@@ -640,6 +679,7 @@ function setLoadingText(text) {
             alert("피드백 저장에 실패했습니다.");
           }
         })
+
         .catch((err) => {
           console.error("[QUICK_FEEDBACK_ERROR]", err);
           alert("피드백 저장에 실패했습니다.");
