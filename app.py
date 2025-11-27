@@ -519,15 +519,21 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
             en_cat = str(raw_cat) if raw_cat is not None else ""
         category = translate_category_to_kr(en_cat)
 
-        photo_url = None
+        # ✅ 사진 여러 장 (최대 5장) URL 생성
         photos = p.get("photos") or []
-        if photos:
-            photo_name = photos[0].get("name")
-            if photo_name:
-                photo_url = (
-                    f"https://places.googleapis.com/v1/{photo_name}/media"
-                    f"?maxWidthPx=400&maxHeightPx=300&key={GOOGLE_PLACES_API_KEY}"
-                )
+        photo_urls = []
+        for ph in photos[:5]:
+            photo_name = ph.get("name")
+            if not photo_name:
+                continue
+            url = (
+                f"https://places.googleapis.com/v1/{photo_name}/media"
+                f"?maxWidthPx=400&maxHeightPx=300&key={GOOGLE_PLACES_API_KEY}"
+            )
+            photo_urls.append(url)
+
+        # 기존 호환용 대표 사진 1장 (첫 번째 것)
+        photo_url = photo_urls[0] if photo_urls else None
 
         reviews_raw = p.get("reviews") or []
         reviews = []
@@ -553,6 +559,8 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
                 "address": address,
                 "open_info": open_info,
                 "category": category,
+                "photo_url": photo_url,      # 대표 1장 (기존 호환용)
+                "photo_urls": photo_urls,    # ✅ 슬라이더용 여러 장
                 "photo_url": photo_url,
                 "distance_km": dist_km,
                 "reviews": reviews,
@@ -838,32 +846,40 @@ def api_save_user():
 @app.route("/api/quick-feedback", methods=["POST"])
 def api_quick_feedback():
     data = request.get_json() or {}
+
     phone = data.get("phone")
-    restaurant_name = data.get("restaurant_name")
-    category = data.get("category")
+    name = data.get("restaurant_name") or data.get("name")  # 혹시 name 으로 올 때 대비
+    category = data.get("category") or ""
     is_good = data.get("is_good")
 
-    if not phone or not restaurant_name:
-        return jsonify({"error": "phone과 restaurant_name은 필수입니다."}), 400
+    # 필수값 검증
+    if not phone or not name:
+        return jsonify({"error": "필수 데이터(phone, restaurant_name)가 누락되었습니다."}), 400
 
     rating = 5 if is_good else 1
 
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        INSERT INTO user_feedback (phone_number, restaurant_name, category, rating)
-        VALUES (%s, %s, %s, %s);
-        """,
-        (phone, restaurant_name, category, rating),
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        cur.execute(
+            """
+            INSERT INTO user_feedback (phone_number, restaurant_name, category, rating)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (phone, name, category, rating)
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print("[QUICK_FEEDBACK_ERROR]", e)
+        return jsonify({"error": "DB 저장 중 오류 발생"}), 500
+    finally:
+        cur.close()
+        conn.close()
 
     return jsonify({"result": "ok"})
+
 
 
 
@@ -1009,8 +1025,13 @@ def api_reco():
 
         address = kakao_addr or p.get("address") or ""
         open_info = p.get("open_info") or ""
-        photo_url = p.get("photo_url")
+
+        # ✅ 여러 장 사진 (최대 5장) 사용
+        photo_urls = p.get("photo_urls") or []
+        photo_url = photo_urls[0] if photo_urls else None  # 기존 구조 호환용 대표 1장
+
         category = p.get("category") or ""
+
 
         # 구글 리뷰 문자열 리스트
         reviews = p.get("reviews") or []
@@ -1092,17 +1113,18 @@ def api_reco():
                 "category": category,
                 "rating": rating,
                 "menu": menu,
-                "summary": summary,   # ✅ 항상 리뷰 기반
+                "summary": summary,
                 "place_id": kakao_place_id,
-                "image_url": photo_url,
-                "distance_km": distance_km,  # ✅ 0.1km 단위
+                "image_url": photo_url,        # 대표 1장 (기존 카드용)
+                "distance_km": distance_km,
                 "keywords": keywords,
-                "images": [photo_url] if photo_url else [],
+                "images": photo_urls,           # ✅ 슬라이더용 여러 장
                 "address": address,
                 "open_info": open_info,
                 "score": score,
             }
         )
+
 
 
     if not candidates:
@@ -1195,28 +1217,29 @@ def init_db_route():
 
 @app.route("/go")
 def go_kakao_map():
-    place_id = request.args.get("pid")
+    # 프론트에서 place_id 또는 pid 로 보낼 수 있으므로 둘 다 받기
+    place_id = request.args.get("pid") or request.args.get("place_id")
     lat = request.args.get("lat")
     lon = request.args.get("lon")
+    name = request.args.get("name", "")
 
-    # 1순위: place_id가 있으면 해당 장소 상세로
+    # 1) place_id 있을 때 → 카카오맵 공식 장소 상세 URL
     if place_id:
-        # 카카오 공식 딥링크: 특정 장소로 바로 이동
-        url = f"https://map.kakao.com/link/to/{place_id}"
-        return redirect(url)
+        # 앱/웹 모두 정상적으로 장소 상세 페이지로 이동하는 확실한 방식
+        return redirect(f"https://place.map.kakao.com/{place_id}")
 
-    # 2순위: 위경도만 있는 경우 지도에 핀 찍어서 열기
+    # 2) place_id 없고 좌표만 있을 때 → 지도에 핀 찍기
     if lat and lon:
         try:
             lat_f = float(lat)
             lon_f = float(lon)
-            url = f"https://map.kakao.com/link/map/{lat_f},{lon_f}"
-            return redirect(url)
-        except ValueError:
+            return redirect(f"https://map.kakao.com/link/map/{name},{lat_f},{lon_f}")
+        except:
             pass
 
-    # 마지막: 그냥 카카오맵 홈
+    # 3) 모두 없으면 카카오맵 홈
     return redirect("https://map.kakao.com/")
+
 
 
 if __name__ == "__main__":
