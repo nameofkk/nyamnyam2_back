@@ -648,19 +648,28 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     return R * c
 
 
+import re
+
 # =========================
 # 리뷰 분석 / 대표메뉴 / 요약
 # =========================
 
 def extract_menu_from_review(review_text):
-    # 한글 메뉴 키워드
+    # 한글 메뉴 키워드 (분식 쪽 강화)
     menu_keywords = [
-        "김치찌개", "된장찌개", "불고기", "삼겹살", "갈비", "냉면", "비빔밥",
+        # 한식/분식
+        "김치찌개", "된장찌개", "불고기", "삼겹살", "갈비",
+        "냉면", "비빔밥", "떡볶이", "라볶이", "튀김", "순대", "김밥",
+        "칼국수", "국수",
+        # 일식
         "초밥", "스시", "라멘", "우동", "돈카츠", "텐동",
+        # 중식
         "짜장면", "짬뽕", "탕수육", "마라탕",
+        # 양식
         "파스타", "피자", "리조또", "스테이크",
-        "커피", "라떼", "에스프레소", "케이크", "빵",
+        # 기타
         "치킨", "버거", "뷔페"
+        # ❌ 케이크/디저트는 분식집에 섞이는 걸 막기 위해 뺌
     ]
 
     found = []
@@ -668,7 +677,7 @@ def extract_menu_from_review(review_text):
         if kw in review_text:
             found.append(kw)
 
-    # 영어 리뷰에서도 메뉴 뽑아서 한글로 매핑
+    # 영어 메뉴 단어 → 한글 매핑 (케이크/디저트 제외)
     eng_map = {
         "sushi": "초밥",
         "ramen": "라멘",
@@ -684,8 +693,8 @@ def extract_menu_from_review(review_text):
         "noodle": "면요리",
         "curry": "카레",
         "coffee": "커피",
-        "cake": "케이크",
-        "dessert": "디저트",
+        # "cake": "케이크",   # ← 제거
+        # "dessert": "디저트",# ← 제거
         "buffet": "뷔페",
     }
     lower = review_text.lower()
@@ -697,47 +706,56 @@ def extract_menu_from_review(review_text):
     return list(dict.fromkeys(found))
 
 
+
+def _normalize_category_kr(category: str | None) -> str | None:
+    """
+    카테고리가 영어(diner, Sushi Restaurant 등)이면
+    화면에는 '음식점' 정도로만 보여주고,
+    한글이 포함돼 있으면 그대로 사용.
+    """
+    if not category:
+        return None
+
+    # 한글이 하나라도 있으면 그대로 사용
+    if re.search(r"[가-힣]", category):
+        return category
+
+    # 혹시 모를 대표적인 영어 카테고리들 매핑
+    mapping = {
+        "Sushi Restaurant": "초밥집",
+        "Korean Restaurant": "한식",
+        "Japanese Restaurant": "일식",
+        "Chinese Restaurant": "중식",
+        "Barbecue Restaurant": "바비큐",
+        "Diner": "음식점",
+        "Restaurant": "음식점",
+    }
+    return mapping.get(category, "음식점")
+
+
 def build_menu_text(name, category):
-    # '음식점' 같이 포괄적인 카테고리는 가게 이름 기준 문구 사용
-    if category and category != "음식점":
-        return f"{category} 위주의 인기 메뉴를 즐길 수 있는 곳이에요."
+    cat = _normalize_category_kr(category)
+    # '음식점' 같이 포괄적이면 가게 이름 기준 문구
+    if cat and cat != "음식점":
+        return f"{cat} 위주의 인기 메뉴를 즐길 수 있는 곳이에요."
     else:
         return f"{name}만의 인기 메뉴를 즐길 수 있는 곳이에요."
-    
+
 
 def build_summary_text(name, category, rating, distance_km):
-    """
-    기본 한 줄 요약 텍스트 생성 함수.
-    (구글 리뷰가 없을 때 fallback 용)
-    """
-    # 평점 문구
-    if rating is None:
-        rating_text = "무난한 평점"
-    elif rating >= 4.2:
-        rating_text = "평균 이상 좋은 평점"
-    elif rating >= 3.5:
-        rating_text = "무난한 평점"
-    else:
-        rating_text = "보통 수준의 평점"
+    rating_text = "평균 이상 좋은 평점" if rating and rating >= 4.0 else "무난한 평점"
+    distance_text = (
+        "현재 위치와 매우 가까워"
+        if distance_km is not None and distance_km <= 0.5
+        else "주변에서"
+    )
 
-    # 거리 문구
-    if distance_km is not None:
-        if distance_km <= 0.3:
-            dist_text = "현재 위치와 매우 가까워"
-        elif distance_km <= 1.0:
-            dist_text = "현재 위치와 가까워"
-        else:
-            dist_text = "주변 위치에서"
-    else:
-        dist_text = "주변 위치에서"
-
-    # 카테고리 문구
-    cat_text = category if category else "다양한 메뉴"
+    cat = _normalize_category_kr(category) or "이 곳"
 
     return (
-        f"{name}은(는) {cat_text} 메뉴를 즐길 수 있는 곳입니다. "
-        f"{rating_text}을 받고 있으며, {dist_text} 가볍게 방문하기 좋습니다."
-    )    
+        f"{name}은(는) {cat} 메뉴를 즐길 수 있는 곳입니다. "
+        f"{rating_text}을 받고 있으며, {distance_text} 가볍게 방문하기 좋습니다."
+    )
 
 
 def build_keywords(category, rating, distance_km, preferred=False, review_text=""):
