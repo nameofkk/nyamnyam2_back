@@ -36,6 +36,22 @@ CELERY_BACKEND = os.getenv("CELERY_BACKEND", "redis://127.0.0.1:6379/0")
 KAKAO_KEY = os.getenv("KAKAO_REST_API_KEY")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 
+# === Google Places 카테고리 한글 매핑 ===
+GOOGLE_CATEGORY_KR = {
+    "Korean Restaurant": "한식당",
+    "Barbecue Restaurant": "바비큐/구이",
+    "Japanese Restaurant": "일식당",
+    "Chinese Restaurant": "중식당",
+    "Pizza Restaurant": "피자",
+    "Chicken Restaurant": "치킨",
+    "Cafe": "카페",
+    "Fast Food Restaurant": "패스트푸드",
+    "Seafood Restaurant": "해산물요리",
+    "Noodle Shop": "면요리",
+    "Steak House": "스테이크하우스",
+    # 필요하면 계속 추가 가능
+}
+
 # === 알리고 / 발송 설정 ===
 PROVIDER_URL = os.getenv("PROVIDER_URL")
 
@@ -328,6 +344,7 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
         "places.currentOpeningHours",
         "places.primaryTypeDisplayName",
         "places.photos",
+        "places.reviews",
     ])
 
     headers = {
@@ -391,8 +408,8 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
                 open_info = weekday_desc[0]
 
         # 카테고리(대표 타입명)
-        category = p.get("primaryTypeDisplayName") or ""
-
+        en_cat = p.get("primaryTypeDisplayName") or ""
+        category = GOOGLE_CATEGORY_KR.get(en_cat, en_cat)
         # 사진 1장 URL 만들기
         photo_url = None
         photos = p.get("photos") or []
@@ -404,9 +421,24 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
                     f"https://places.googleapis.com/v1/{photo_name}/media"
                     f"?maxHeightPx=400&maxWidthPx=600&key={GOOGLE_PLACES_API_KEY}"
                 )
-
+        # 현재 위치와 거리(km)
         # 현재 위치와 거리(km)
         distance_km = round(calc_distance(lat, lon, plat, plon), 1)
+
+        # 🔹 Google Places 리뷰 텍스트 추출
+        reviews = []
+        raw_reviews = p.get("reviews") or []
+        for r in raw_reviews:
+            # New Places API 포맷 고려
+            # 보통 {"text": {"text": "...", "languageCode": "en"}} 형태
+            text_obj = r.get("originalText") or r.get("text")
+            if isinstance(text_obj, dict):
+                txt = text_obj.get("text", "")
+            else:
+                txt = text_obj or ""
+            if txt:
+                # 줄바꿈 제거해서 한 줄로
+                reviews.append(txt.replace("\n", " ").strip())
 
         results.append({
             "name": name,
@@ -418,9 +450,33 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
             "category": category,
             "photo_url": photo_url,
             "distance_km": distance_km,
+            "reviews": reviews,  # 🔹 이제 정상적으로 문자열 리스트가 들어감
         })
 
+
     return results
+
+import re
+
+def extract_menu_from_review(text):
+    """
+    리뷰 텍스트에서 음식 이름/메뉴 키워드를 추출.
+    기본 한식/일식/중식/구이 기반 키워드로 탐지.
+    """
+    menu_keywords = [
+        "갈비","불고기","삼겹살","목살","갈비살","냉면","비빔면","김치찌개","된장찌개",
+        "돈까스","초밥","라멘","파스타","스테이크","치킨","피자","만두","볶음밥",
+        "해물","조개","칼국수","국수","덮밥","불닭","제육","족발","보쌈",
+    ]
+
+    found = []
+    for k in menu_keywords:
+        if k in text:
+            found.append(k)
+
+    # 중복 제거
+    return list(dict.fromkeys(found))
+
 
 
 # =========================
@@ -2675,15 +2731,31 @@ def api_reco():
         open_info = p.get("open_info") or ""
         photo_url = p.get("photo_url")
 
-        # 대표메뉴 / 요약 문구 (기존 유틸 재사용)
-        base_menu = build_menu_text(name, category)
-        base_summary = build_summary_text(name, category, rating, distance_km)
+        # 🔹 리뷰 리스트 (search_google_places에서 넣어준 값)
+        reviews = p.get("reviews") or []
+        review_texts = [r for r in reviews if isinstance(r, str)]
 
-        # 지금은 카카오 리뷰 대신, 기본 문구 그대로 사용
-        menu = base_menu
-        summary = base_summary
+        # 🔹 리뷰 기반 한줄 요약
+        if review_texts:
+            first = review_texts[0].replace("\n", " ").strip()
+            if len(first) > 80:
+                first = first[:80].rstrip() + "..."
+            summary = first
+        else:
+            summary = build_summary_text(name, category, rating, distance_km)
 
-        # 키워드(해시태그) 생성 (선호도 기반 preferred는 일단 False 처리)
+        # 🔹 리뷰 기반 대표 메뉴 추출
+        menus = []
+        for txt in review_texts:
+            menus += extract_menu_from_review(txt)
+        menus = list(dict.fromkeys(menus))
+
+        if menus:
+            menu = ", ".join(menus[:2])
+        else:
+            menu = build_menu_text(name, category)
+
+        # 🔹 키워드(해시태그) 생성
         keywords = build_keywords(
             category,
             rating,
@@ -2692,7 +2764,7 @@ def api_reco():
             review_text=summary,
         )
 
-        # 프론트(reco.html)에서 사용하는 필드 구조에 맞게 맞춰줌
+        # 🔹 프론트(reco.html)에서 사용하는 필드 구조에 맞춰줌
         result.append(
             {
                 "name": name,
@@ -2700,7 +2772,6 @@ def api_reco():
                 "rating": rating,
                 "menu": menu,
                 "summary": summary,
-                # Google place id는 직접 쓰지 않고, 카카오맵 버튼은 이름 검색으로 처리할 예정이라 공란
                 "place_id": "",
                 "image_url": photo_url,
                 "distance_km": distance_km,
