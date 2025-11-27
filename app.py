@@ -307,20 +307,29 @@ def match_kakao_place_by_location(name, lat, lon, radius=100):
     Google Places에서 받은 가게 이름 + 좌표를 가지고
     카카오맵 place_id를 찾는다.
 
-    1순위: 키워드 검색(query=이름, sort=distance)
+    1순위: 키워드 검색(query=정제된 이름, sort=distance)
     2순위: 결과 없으면 FD6 카테고리 검색으로 근처 1개라도 잡기
     """
     if not KAKAO_REST_API_KEY:
         return None, None, None
 
-    # 1) 이름 기반 키워드 검색
+    # 1) 이름 정제: 너무 긴 이름, 파이프(|) 등 잘라주기
+    clean_name = None
     if name:
+        # '월화고기 상암점 | Sangam korean bbq restaurant | ...' 이런 형태 방지
+        clean_name = re.split(r'[|ㆍ·\-]', str(name))[0].strip()
+        # 너무 길면 Kakao가 400 던질 수 있으니 자르기 (안전하게 40자)
+        if len(clean_name) > 40:
+            clean_name = clean_name[:40]
+
+    # 1) 이름 기반 키워드 검색
+    if clean_name:
         url = "https://dapi.kakao.com/v2/local/search/keyword.json"
         headers = {
             "Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"
         }
         params = {
-            "query": name,
+            "query": clean_name,
             "x": lon,
             "y": lat,
             "radius": radius,
@@ -355,6 +364,7 @@ def match_kakao_place_by_location(name, lat, lon, radius=100):
         print("[KAKAO_MATCH_CATEGORY_ERROR]", e)
 
     return None, None, None
+
 
 
 def get_kakao_basic_info(place_id):
@@ -1009,16 +1019,23 @@ def api_reco():
         # 가게 이름 정리
         name = name_ko or raw_name or "이름 없음"
 
-        # ✅ 한 줄 리뷰: 구글 리뷰 기반으로 (한글 우선, 없으면 영어)
+        # ✅ 한 줄 리뷰: 한국어 리뷰가 있으면 그걸 사용,
+        #               없으면 영어 리뷰 대신 기본 요약 사용
         if review_texts:
+            # 한글 포함된 리뷰만 우선
             kr_reviews = [txt for txt in review_texts if re.search(r"[가-힣]", txt)]
-            chosen = kr_reviews[0] if kr_reviews else review_texts[0]
-            chosen = chosen.replace("\\n", " ").strip()
-            if len(chosen) > 80:
-                chosen = chosen[:80].rstrip() + "..."
-            summary = chosen
+            if kr_reviews:
+                chosen = kr_reviews[0]
+                chosen = chosen.replace("\\n", " ").strip()
+                if len(chosen) > 80:
+                    chosen = chosen[:80].rstrip() + "..."
+                summary = chosen
+            else:
+                # 한국어 리뷰가 하나도 없으면 기본 요약으로
+                summary = build_summary_text(name, category, rating, distance_km)
         else:
             summary = build_summary_text(name, category, rating, distance_km)
+
 
         # ✅ 대표 메뉴: 강화된 extract_menu_from_review 사용
         menus = []
@@ -1182,11 +1199,13 @@ def go_kakao_map():
     lat = request.args.get("lat")
     lon = request.args.get("lon")
 
+    # 1순위: place_id가 있으면 해당 장소 상세로
     if place_id:
-        # ✅ 장소 상세 페이지로 바로 이동 (웹/앱 모두 가게 정보 노출)
-        url = f"https://place.map.kakao.com/{place_id}"
+        # 카카오 공식 딥링크: 특정 장소로 바로 이동
+        url = f"https://map.kakao.com/link/to/{place_id}"
         return redirect(url)
 
+    # 2순위: 위경도만 있는 경우 지도에 핀 찍어서 열기
     if lat and lon:
         try:
             lat_f = float(lat)
@@ -1196,8 +1215,8 @@ def go_kakao_map():
         except ValueError:
             pass
 
+    # 마지막: 그냥 카카오맵 홈
     return redirect("https://map.kakao.com/")
-
 
 
 if __name__ == "__main__":
