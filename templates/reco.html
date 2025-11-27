@@ -195,17 +195,29 @@
       background: #f2f3f6;
     }
 
+    /* ✅ 슬라이더 컨테이너 */
     .thumb-inner {
       width: 100%;
       height: 100%;
-      overflow: hidden;
+      display: flex;
+      flex-direction: row;
+      overflow-x: auto;
+      scroll-snap-type: x mandatory;
+      -webkit-overflow-scrolling: touch;
     }
 
+    .thumb-inner::-webkit-scrollbar {
+      display: none;
+    }
+
+    /* ✅ 슬라이드 한 장 */
     .main-photo {
+      flex: 0 0 100%;
       width: 100%;
       height: 100%;
       object-fit: cover;
       display: block;
+      scroll-snap-align: center;
       transform: scale(1.03);
     }
 
@@ -540,6 +552,12 @@ function setLoadingText(text) {
           item.image_url ||
           "https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/thumnail.png";
 
+                  // ✅ 슬라이더용 이미지 배열 (없으면 대표 1장만)
+        const images =
+          (item.images && item.images.length > 0)
+            ? item.images
+            : [mainImage];
+
         const kakaoLines = [];
         if (item.address) kakaoLines.push("📍 " + item.address);
         if (item.open_info) kakaoLines.push("⏰ " + item.open_info);
@@ -566,10 +584,16 @@ const openInfo = item.open_info ? item.open_info : "";
 
           <div class="thumb">
             <div class="thumb-inner">
-              <img class="main-photo" src="${mainImage}" alt="${item.name || ''}">
+              ${images
+                .map(
+                  (src) =>
+                    `<img class="main-photo" src="${src}" alt="${item.name || ''}">`
+                )
+                .join("")}
             </div>
             ${distanceText ? `<div class="thumb-badge">${distanceText}</div>` : ""}
           </div>
+
 
           <div class="card-body">
             <div class="card-title">${item.name || ""}</div>
@@ -635,16 +659,15 @@ const openInfo = item.open_info ? item.open_info : "";
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           phone: phone,
-          place_id: item.place_id,
-          name: item.name,
+          restaurant_name: item.name,  // ✅ 백엔드에서 우선 사용하는 필드
           category: item.category,
-          like: isLike,
-          time_of_day: timeOfDay,
+          is_good: isLike,             // ✅ 백엔드에서 읽는 필드명
         }),
       })
+
         .then((r) => r.json())
         .then((res) => {
-          if (res && res.ok) {
+          if (res && res.result === "ok") {
             if (isLike) {
               likeBtn.innerText = "👍 반영됨";
             } else {
@@ -656,6 +679,7 @@ const openInfo = item.open_info ? item.open_info : "";
             alert("피드백 저장에 실패했습니다.");
           }
         })
+
         .catch((err) => {
           console.error("[QUICK_FEEDBACK_ERROR]", err);
           alert("피드백 저장에 실패했습니다.");
