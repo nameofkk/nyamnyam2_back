@@ -225,6 +225,33 @@
       -webkit-user-drag: none;
     }
 
+    /* 이미지 슬라이드용 화살표 */
+    .thumb-arrow {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      border: none;
+      background: rgba(0, 0, 0, 0.45);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 16px;
+      z-index: 5;
+    }
+
+    .thumb-arrow-left {
+      left: 8px;
+    }
+
+    .thumb-arrow-right {
+      right: 8px;
+    }
+
     .thumb-badge {
       position: absolute;
       bottom: 10px;
@@ -235,8 +262,6 @@
       padding: 4px 9px;
       border-radius: 999px;
     }
-
-
     /* 카드 본문 */
     .card-body {
       padding: 16px 18px 16px;
