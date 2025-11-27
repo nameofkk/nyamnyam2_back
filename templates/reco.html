@@ -30,10 +30,10 @@
       color: #555;
     }
 
-    /* 로딩 애니메이션 */
+    /* 로딩 영역 */
     #loading {
       text-align: center;
-      margin-top: 50px;
+      margin-top: 40px;
     }
     .spinner {
       width: 40px;
@@ -44,15 +44,21 @@
       border-radius: 50%;
       animation: spin 0.9s linear infinite;
     }
+    #loading p {
+      margin-top: 14px;
+      color: #777;
+      font-size: 14px;
+    }
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
 
-    /* 카드 리스트 */
+    /* 카드 리스트 (가로 스크롤) */
     #cards {
-      display: none;
+      display: none;              /* 처음엔 숨김 */
       margin-top: 20px;
       padding-left: 20px;
+      padding-right: 20px;
       overflow-x: auto;
       scroll-snap-type: x mandatory;
       -webkit-overflow-scrolling: touch;
@@ -75,6 +81,7 @@
       margin: 0 0 8px;
       font-size: 20px;
     }
+
     .tag {
       display: inline-block;
       background: #ffecd9;
@@ -83,15 +90,19 @@
       border-radius: 12px;
       font-size: 12px;
       margin-bottom: 10px;
+      margin-right: 4px;
     }
+
+    .menu {
+      font-weight: 600;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
     .desc {
       color: #555;
       font-size: 13px;
       line-height: 1.4;
-      margin-bottom: 12px;
-    }
-    .menu {
-      font-weight: 600;
       margin-bottom: 12px;
     }
 
@@ -109,7 +120,7 @@
       font-size: 14px;
     }
 
-    /* 하단 여백 */
+    /* 하단 여백 (여유 공간) */
     .bottom-space {
       height: 60px;
     }
@@ -118,53 +129,185 @@
 
 <body>
 
-<div class="header">
-  <h2>오늘의 맛집 추천</h2>
-  <p>{{ phone }}님을 위한 {{ time }} 추천 3곳</p>
-</div>
+  <div class="header">
+    <h2>오늘의 맛집 추천</h2>
+    <p>{{ phone }}님을 위한 {{ time }} 추천 3곳</p>
+  </div>
 
-<div id="loading">
-  <div class="spinner"></div>
-  <p style="margin-top: 14px; color:#777;">AI가 주변 맛집을 분석 중...</p>
-</div>
+  <div id="loading">
+    <div class="spinner"></div>
+    <p>AI가 주변 맛집을 분석 중입니다...</p>
+  </div>
 
-<div id="cards"></div>
-<div class="bottom-space"></div>
+  <div id="cards"></div>
+  <div class="bottom-space"></div>
 
-<script>
-  document.addEventListener("DOMContentLoaded", function() {
+  <script>
+    const phone = "{{ phone }}";
+    const timeOfDay = "{{ time }}";
 
-    // 서버에서 받아온 JSON 데이터 → reco.html 변수로 전달됨
-    const data = {{ results|tojson }};
+    const loadingEl = document.getElementById("loading");
+    const loadingTextEl = loadingEl.querySelector("p");
+    const cardsEl = document.getElementById("cards");
 
-    const loading = document.getElementById("loading");
-    const cards = document.getElementById("cards");
+    // 텍스트만 바꾸는 헬퍼 함수
+    function setLoadingText(text) {
+      loadingEl.style.display = "block";
+      if (loadingTextEl) loadingTextEl.innerText = text;
+    }
 
-    // 1. 로딩 표시 후 0.8초 후 카드 표시
-    setTimeout(() => {
-      loading.style.display = "none";
-      cards.style.display = "flex";
-      renderCards();
-    }, 800);
+    document.addEventListener("DOMContentLoaded", start);
 
-    function renderCards() {
-      data.forEach(item => {
+    // -----------------------------
+    // 1. 위치 가져오기 → /api/reco 호출
+    // -----------------------------
+    function start() {
+      console.log("[RECO] start() called");
+
+      // geolocation 자체가 없는 브라우저
+      if (!navigator.geolocation) {
+        setLoadingText("위치 정보를 지원하지 않습니다. 기본 위치로 추천합니다.");
+        fetchReco(33.462046, 126.329235); // 제주 애월 기본 좌표
+        return;
+      }
+
+      let called = false;
+
+      function go(lat, lon) {
+        if (called) return;
+        called = true;
+        console.log("[RECO] 위치 사용:", lat, lon);
+        fetchReco(lat, lon);
+      }
+
+      try {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            // 정상 위치 수신
+            go(pos.coords.latitude, pos.coords.longitude);
+          },
+          (err) => {
+            // 위치 권한 거부 / 실패
+            console.error("[RECO] 위치 오류(콜백):", err);
+            setLoadingText("위치를 가져오지 못했습니다. 기본 위치로 추천합니다.");
+            go(33.462046, 126.329235);
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 7000,
+            maximumAge: 600000,
+          }
+        );
+      } catch (e) {
+        // getCurrentPosition 자체가 예외 나는 경우
+        console.error("[RECO] 위치 API 예외(try/catch):", e);
+        setLoadingText("위치 정보를 사용할 수 없습니다. 기본 위치로 추천합니다.");
+        go(33.462046, 126.329235);
+      }
+
+      // geolocation이 너무 오래 멈춰 있는 경우 최종 타임아웃
+      setTimeout(() => {
+        if (!called) {
+          console.warn("[RECO] 위치 응답 지연 → 기본 좌표 사용");
+          setLoadingText("위치 응답이 느립니다. 기본 위치로 추천합니다.");
+          go(33.462046, 126.329235);
+        }
+      }, 8000);
+    }
+
+    // -----------------------------
+    // 2. /api/reco 호출
+    // -----------------------------
+    function fetchReco(lat, lon) {
+      setLoadingText("주변 맛집을 불러오는 중입니다...");
+      cardsEl.style.display = "none";
+      cardsEl.innerHTML = "";
+
+      fetch("/api/reco", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: phone,
+          time: timeOfDay,
+          lat: lat,
+          lon: lon,
+        }),
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error("서버 오류: " + r.status);
+          return r.json();
+        })
+        .then(showCards)
+        .catch((err) => {
+          console.error("[RECO] API 오류:", err);
+          setLoadingText("추천 정보를 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.");
+        });
+    }
+
+    // -----------------------------
+    // 3. 카드 렌더링
+    // -----------------------------
+    function showCards(data) {
+      console.log("[RECO] 결과:", data);
+
+      if (!Array.isArray(data) || data.length === 0) {
+        setLoadingText("근처 추천 맛집을 찾지 못했습니다.");
+        cardsEl.style.display = "none";
+        return;
+      }
+
+      // 로딩 영역 숨기고 카드 표시
+      loadingEl.style.display = "none";
+      cardsEl.style.display = "flex";
+      cardsEl.innerHTML = "";
+
+      data.forEach((item) => {
         const card = document.createElement("div");
         card.className = "card";
 
+        const ratingText =
+          item.rating && item.rating.toFixed
+            ? item.rating.toFixed(1)
+            : (item.rating || "-");
+
+        const distanceText =
+          item.distance_km != null ? `약 ${item.distance_km}km` : "";
+
+        const keywords = (item.keywords || [])
+          .map((k) => `<span class="tag">#${k}</span>`)
+          .join(" ");
+
+        // /go 라우트 활용해서 카카오맵으로 이동
+        const mapUrl =
+          "/go?phone=" +
+          encodeURIComponent(phone || "") +
+          "&place_id=" +
+          encodeURIComponent(item.place_id || "") +
+          "&name=" +
+          encodeURIComponent(item.name || "");
+
         card.innerHTML = `
-          <span class="tag">${item.category}</span>
-          <h3>${item.name}</h3>
-          <div class="menu">대표 메뉴: ${item.menu || '정보 없음'}</div>
-          <div class="desc">${item.description || ''}</div>
-          <a class="btn-map" href="${item.kakao_link}" target="_blank">카카오맵으로 이동</a>
+          <span class="tag">${item.category || "기타"}</span>
+          <h3>${item.name || ""}</h3>
+          <div class="menu">
+            대표 메뉴: ${item.menu || "정보 없음"} 
+            ${ratingText !== "-" ? ` · ★ ${ratingText}` : ""}
+          </div>
+          <div class="desc">
+            ${item.summary || ""}
+            ${distanceText ? `<br>${distanceText}` : ""}
+            ${item.address ? `<br>📍 ${item.address}` : ""}
+            ${item.open_info ? `<br>⏰ ${item.open_info}` : ""}
+            ${keywords ? `<br><br>${keywords}` : ""}
+          </div>
+          <a class="btn-map" href="${mapUrl}" target="_blank">카카오맵으로 이동</a>
         `;
 
-        cards.appendChild(card);
+        cardsEl.appendChild(card);
       });
     }
-  });
-</script>
+  </script>
 
 </body>
 </html>
+
