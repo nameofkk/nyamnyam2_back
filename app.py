@@ -115,11 +115,52 @@ def fetch_restaurants_from_kakao(lat, lon, radius=3000, query="맛집"):
 # =========================
 # 카카오맵 상세페이지에서 실제 평점 가져오기 (스크래핑)
 # =========================
+def _extract_rating_from_json(obj):
+    """
+    Kakao place main/v JSON 전체를 훑으면서
+    0~5 사이의 score/rating 계열 숫자를 찾아서 대표 평점으로 추출
+    """
+    candidates = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                # 중첩 구조는 재귀
+                if isinstance(v, (dict, list)):
+                    walk(v)
+                    continue
+
+                kl = str(k).lower()
+                if not any(s in kl for s in ("score", "rating", "avg")):
+                    continue
+
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+
+                # 0~5 사이만 평점 후보로
+                if 0 < fv <= 5:
+                    candidates.append(fv)
+        elif isinstance(o, list):
+            for item in o:
+                walk(item)
+
+    walk(obj)
+
+    if not candidates:
+        return None
+
+    # 여러 개 있으면 평균(또는 max) 택1
+    return sum(candidates) / len(candidates)
+
+
 def get_kakao_rating(place_id):
     """
     카카오맵 place_id로 실제 평점 가져오기
-    1순위: JSON API (https://place.map.kakao.com/main/v/{id})
+    1순위: JSON API (https://place.map.kakao.com/main/v/{id}) 전체를 훑어서 score/rating 후보 추출
     2순위: 기존 HTML 파싱(em.num_rate)
+    실패하면 None 리턴 (임의로 4.0 넣지 않음)
     """
     # 1) JSON 기반 시도
     try:
@@ -127,23 +168,9 @@ def get_kakao_rating(place_id):
         resp = requests.get(api_url, timeout=3)
         data = resp.json()
 
-        basic = (data.get("basicInfo") or
-                 data.get("basicinfo") or {})
-        # 필드 이름이 서비스 개편마다 조금씩 달라질 수 있어서 여러 후보를 체크
-        candidates = [
-            basic.get("feedbackScore"),
-            basic.get("feedbackscore"),
-            basic.get("score"),
-            basic.get("avg_score"),
-            basic.get("rating"),
-        ]
-        for v in candidates:
-            if v is None:
-                continue
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                continue
+        rating = _extract_rating_from_json(data)
+        if rating is not None:
+            return float(rating)
     except Exception as e:
         print(f"[평점 JSON 스크래핑 오류] id={place_id} → {e}")
 
@@ -159,8 +186,8 @@ def get_kakao_rating(place_id):
     except Exception as e:
         print(f"[평점 HTML 스크래핑 오류] id={place_id} → {e}")
 
+    # 여기서는 아무 기본값 넣지 않고 None
     return None
-
 
 
 # =========================
@@ -210,13 +237,13 @@ def fetch_restaurants_detailed(lat, lon, radius=1500):
             # ⭐ 실제 평점 가져오기 시도
             rating = get_kakao_rating(place_id)
 
-            # 1) 스크래핑 실패했으면 일단 4.0 기본값
-            if rating is None:
-                rating = 4.0
+            # 점수 계산용으로만 쓰는 값 (rating 이 없는 경우 중간값으로 보정)
+            rating_for_score = rating if rating is not None else 3.5
 
-            # 2) 너무 낮은 곳(2.5 미만)만 버리고 나머지는 수용
-            if rating < 2.5:
+           # 2.5 미만은 버리되, rating == None 인 가게는 필터하지 않음
+            if rating_for_score < 2.5:
                 continue
+
 
             # 카테고리 단순화
             category_name = d.get("category_name")
@@ -231,7 +258,7 @@ def fetch_restaurants_detailed(lat, lon, radius=1500):
                 "lat": float(d.get("y")),
                 "lon": float(d.get("x")),
                 "category": category_simple,
-                "rating": float(rating),
+                "rating": float(rating) if rating is not None else None,
             })
 
         # 마지막 페이지면 중단
@@ -2382,7 +2409,7 @@ def get_kakao_images(place_id, limit=5):
     1순위: JSON(main/v)에서 mainphotourl 등 사진 URL
     2순위: HTML 내 갤러리 이미지
     3순위: 그 외 img 태그
-    -> staticmap(지도 썸네일)은 전부 제외
+    -> staticmap(지도 썸네일) + placeholder(로고/사진없음)는 제외
     """
     urls = []
 
@@ -2394,67 +2421,83 @@ def get_kakao_images(place_id, limit=5):
         basic = (data.get("basicInfo") or
                  data.get("basicinfo") or {})
 
-        # 대표 사진 후보들
+        # 기존 mainphotourl 계열
         photo_candidates = []
-        if "mainphotourl" in basic:
-            photo_candidates.append(basic.get("mainphotourl"))
+        for key in basic.keys():
+            if "mainphoto" in key.lower():
+                photo_candidates.append(basic[key])
+
+        # photo 블록 우선 시도
         if "photo" in basic and isinstance(basic["photo"], dict):
-            lst = basic["photo"].get("list") or []
-            if lst and isinstance(lst, list):
-                # list[0].orgurl / list[0].url 등 여러 케이스를 시도
-                for k in ("orgurl", "url", "thumbnail"):
-                    v = lst[0].get(k)
-                    if v:
-                        photo_candidates.append(v)
-                        break
+            lst = basic["photo"].get("list") or basic["photo"].get("photoList") or []
+            if isinstance(lst, list):
+                for item in lst[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    for k in ("orgurl", "url", "thumbnail"):
+                        v = item.get(k)
+                        if v:
+                            photo_candidates.append(v)
+
+        # JSON 전체에서 이미지 URL 추가 수집
+        json_urls = _extract_image_urls_from_json(data)
+        photo_candidates.extend(json_urls)
 
         for p in photo_candidates:
             p = _normalize_url(p)
-            if p and not _is_map_thumbnail(p) and p not in urls:
+            if not p or _is_map_thumbnail(p) or _is_placeholder_image(p):
+                continue
+            if p not in urls:
                 urls.append(p)
-    except Exception as e:
-        print(f"[이미지 JSON 스크래핑 오류] id={place_id} → {e}")
-
-    # 2) HTML 내 이미지 추가로 수집
-    try:
-        url = f"https://place.map.kakao.com/{place_id}"
-        html = requests.get(url, timeout=3).text
-        soup = BeautifulSoup(html, "html.parser")
-
-        photo_imgs = soup.select(
-            ".photo_area img, .photo_viewer img, .gallery_photo img, .link_photo img"
-        )
-        for img in photo_imgs:
-            src = img.get("src") or img.get("data-src")
-            if not src:
-                continue
-            src = _normalize_url(src)
-            if not src or _is_map_thumbnail(src):
-                continue
-            if src not in urls:
-                urls.append(src)
             if len(urls) >= limit:
                 break
 
-        if len(urls) < limit:
-            for img in soup.select("img"):
+    except Exception as e:
+        print(f"[이미지 JSON 스크래핑 오류] id={place_id} → {e}")
+
+    # 2) HTML 내 이미지 추가 수집 (JSON만으로 부족할 때)
+    if len(urls) < limit:
+        try:
+            url = f"https://place.map.kakao.com/{place_id}"
+            html = requests.get(url, timeout=3).text
+            soup = BeautifulSoup(html, "html.parser")
+
+            # 갤러리/사진 영역 우선
+            photo_imgs = soup.select(
+                ".photo_area img, .photo_viewer img, .gallery_photo img, .link_photo img"
+            )
+            for img in photo_imgs:
                 src = img.get("src") or img.get("data-src")
                 if not src:
                     continue
                 src = _normalize_url(src)
-                if not src or _is_map_thumbnail(src):
+                if not src or _is_map_thumbnail(src) or _is_placeholder_image(src):
                     continue
                 if src not in urls:
                     urls.append(src)
                 if len(urls) >= limit:
                     break
 
-    except Exception as e:
-        print(f"[이미지 HTML 스크래핑 오류] id={place_id} → {e}")
+            # 아직 모자라면 페이지 내 모든 img 태그 스캔
+            if len(urls) < limit:
+                for img in soup.select("img"):
+                    src = img.get("src") or img.get("data-src")
+                    if not src:
+                        continue
+                    src = _normalize_url(src)
+                    if not src or _is_map_thumbnail(src) or _is_placeholder_image(src):
+                        continue
+                    if src not in urls:
+                        urls.append(src)
+                    if len(urls) >= limit:
+                        break
 
-    # 최종 정리 + 로그
-    urls = [u for u in urls if u and not _is_map_thumbnail(u)]
-    # 중복 제거 + limit
+        except Exception as e:
+            print(f"[이미지 HTML 스크래핑 오류] id={place_id} → {e}")
+
+    # 3) 최종 정리 + 로그
+    urls = [u for u in urls if u and not _is_map_thumbnail(u) and not _is_placeholder_image(u)]
+
     dedup = []
     seen = set()
     for u in urls:
@@ -2469,11 +2512,48 @@ def get_kakao_images(place_id, limit=5):
     return dedup
 
 
+
 def get_kakao_image(place_id):
     images = get_kakao_images(place_id, limit=1)
     return images[0] if images else None
 
+def _is_placeholder_image(u: str) -> bool:
+    """
+    Kakao 기본 로고 / no-image 같은 플레이스홀더를 최대한 걸러내기 위한 휴리스틱
+    실제 URL을 직접 확인할 수 없으니,
+    'kakaomap' + 'noimg/nodata/logo' 패턴 위주로만 필터링
+    """
+    if not u:
+        return False
+    ul = u.lower()
+    if "kakaomap" in ul and any(x in ul for x in ("noimg", "nodata", "logo", "default")):
+        return True
+    return False
 
+def _extract_image_urls_from_json(obj):
+    urls = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if isinstance(v, (dict, list)):
+                    walk(v)
+                    continue
+
+                # 문자열 + http + 이미지 확장자
+                if isinstance(v, str):
+                    s = v.strip()
+                    sl = s.lower()
+                    if s.startswith("http") and any(ext in sl for ext in (".jpg", ".jpeg", ".png", ".webp")):
+                        # 지도/로고 제외
+                        if not _is_map_thumbnail(s) and not _is_placeholder_image(s):
+                            urls.append(s)
+        elif isinstance(o, list):
+            for item in o:
+                walk(item)
+
+    walk(obj)
+    return urls
 
 def summarize_review(place_id, max_len=100, empty_text="리뷰 정보 없음"):
     url = f"https://place.map.kakao.com/{place_id}"
