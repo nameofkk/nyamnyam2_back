@@ -192,9 +192,9 @@ def get_kakao_rating(place_id):
 # =========================
 def fetch_restaurants_detailed(lat, lon, radius=1500):
     """
-    1) 카카오 키워드 API로 주변 맛집(place_id 포함) 수집
-    2) 각 place_id로 상세페이지 스크래핑 → 실제 평점 가져오기
-    3) 너무 낮은 평점(예: 2.5 미만)만 빼고 다 받아들임
+    카카오 키워드 API로 주변 맛집(place_id 포함) 수집
+    - main/v JSON 평점 스크래핑은 중단 (404/차단 이슈 때문에)
+    - 대신 모든 가게를 기본 평점 3.5로 간주해서 점수 계산에만 사용
     """
     if not KAKAO_KEY:
         print("⚠ KAKAO_REST_API_KEY 미설정")
@@ -231,16 +231,9 @@ def fetch_restaurants_detailed(lat, lon, radius=1500):
             if not place_id:
                 continue
 
-            # ⭐ 실제 평점 가져오기 시도
-            rating = get_kakao_rating(place_id)
-
-            # 점수 계산용으로만 쓰는 값 (rating 이 없는 경우 중간값으로 보정)
-            rating_for_score = rating if rating is not None else 3.5
-
-           # 2.5 미만은 버리되, rating == None 인 가게는 필터하지 않음
-            if rating_for_score < 2.5:
-                continue
-
+            # ⚠ main/v JSON 평점 스크래핑은 더 이상 사용하지 않고,
+            #    모든 가게를 '기본 3.5점짜리 가게'라고 가정.
+            rating = 3.5
 
             # 카테고리 단순화
             category_name = d.get("category_name")
@@ -255,7 +248,7 @@ def fetch_restaurants_detailed(lat, lon, radius=1500):
                 "lat": float(d.get("y")),
                 "lon": float(d.get("x")),
                 "category": category_simple,
-                "rating": float(rating) if rating is not None else None,
+                "rating": rating,   # DB에 저장될 기본 평점
             })
 
         # 마지막 페이지면 중단
@@ -264,8 +257,9 @@ def fetch_restaurants_detailed(lat, lon, radius=1500):
 
         params["page"] += 1
 
-    print(f"[카카오★] 평점2.5+ 매장 {len(collected)}개 수집 완료 (lat={lat}, lon={lon})")
+    print(f"[카카오★] 실시간 검색 매장 {len(collected)}개 수집 완료 (lat={lat}, lon={lon})")
     return collected
+
 
 
 # =========================
