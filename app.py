@@ -1837,6 +1837,9 @@ def reco_page():
 <title>오늘의 추천 맛집</title>
 <style>
 body {
+  background: yellow !important;
+}
+body {
   font-family: "Noto Sans KR", sans-serif;
   background: #f6f7fb;
   margin: 0;
