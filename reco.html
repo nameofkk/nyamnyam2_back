@@ -383,12 +383,13 @@
 
     let factTimer = null;
 
-    function setLoadingText(text) {
-      loadingEl.style.display = "block";
-      if (loadingMainEl) {
-        loadingMainEl.innerText = text;
-      }
-    }
+function setLoadingText(text) {
+  if (loadingMainEl) {
+    loadingMainEl.innerText = text;
+  }
+  // ✔ 더 이상 loadingEl.style.display = "block"; 을 실행하지 않음
+  //   (이게 여러 번 실행될 때 화면이 리셋되어 잡지식이 사라지고 있었음)
+}
 
     function startFunFacts() {
       if (!loadingFactEl || funFacts.length === 0) return;
