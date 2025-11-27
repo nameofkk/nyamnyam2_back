@@ -34,6 +34,7 @@ CELERY_BROKER = os.getenv("CELERY_BROKER", "redis://127.0.0.1:6379/0")
 CELERY_BACKEND = os.getenv("CELERY_BACKEND", "redis://127.0.0.1:6379/0")
 
 KAKAO_KEY = os.getenv("KAKAO_REST_API_KEY")
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 
 # === 알리고 / 발송 설정 ===
 PROVIDER_URL = os.getenv("PROVIDER_URL")
@@ -300,6 +301,126 @@ def calculate_score(user, restaurant, last_recent_names):
         score -= 1000
 
     return score
+
+# =========================
+# Google Places API (New) - 주변 음식점 검색
+# =========================
+
+def search_google_places(lat, lon, radius_m=1500, max_results=20):
+    """
+    Google Places 'searchNearby'로 (lat, lon) 주변 음식점 목록을 가져온다.
+    - 반환 형식: [ { name, lat, lon, rating, address, open_info, category, photo_url, distance_km }, ... ]
+    """
+    if not GOOGLE_PLACES_API_KEY:
+        print("⚠ GOOGLE_PLACES_API_KEY가 설정되어 있지 않습니다.")
+        return []
+
+    url = "https://places.googleapis.com/v1/places:searchNearby"
+
+    # 어떤 필드들을 받을지 지정 (필드가 많을수록 비용이 조금 올라감)
+    field_mask = ",".join([
+        "places.id",
+        "places.displayName",
+        "places.location",
+        "places.rating",
+        "places.userRatingCount",
+        "places.shortFormattedAddress",
+        "places.currentOpeningHours",
+        "places.primaryTypeDisplayName",
+        "places.photos",
+    ])
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": field_mask,
+    }
+
+    body = {
+        "includedTypes": ["restaurant"],  # 음식점만
+        "maxResultCount": max_results,    # 한 번에 최대 몇 개까지 받을지
+        "locationRestriction": {
+            "circle": {
+                "center": {
+                    "latitude": lat,
+                    "longitude": lon,
+                },
+                "radius": float(radius_m),  # 반경(미터)
+            }
+        },
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=body, timeout=5)
+        if resp.status_code != 200:
+            print("[GOOGLE_PLACES_ERROR]", resp.status_code, resp.text)
+            return []
+
+        data = resp.json()
+        raw_places = data.get("places", [])
+    except Exception as e:
+        print("[GOOGLE_PLACES_EXCEPTION]", e)
+        return []
+
+    results = []
+
+    for p in raw_places:
+        # 이름
+        name_info = p.get("displayName") or {}
+        name = name_info.get("text") or "이름 없음"
+
+        # 좌표
+        loc = p.get("location") or {}
+        plat = loc.get("latitude")
+        plon = loc.get("longitude")
+        if plat is None or plon is None:
+            continue
+
+        # 평점
+        rating = p.get("rating")
+        # 주소
+        address = p.get("shortFormattedAddress") or ""
+
+        # 영업시간 텍스트 (간단히 한 줄 정도만)
+        open_info = ""
+        opening = p.get("currentOpeningHours") or p.get("regularOpeningHours")
+        if opening:
+            weekday_desc = opening.get("weekdayDescriptions")
+            if weekday_desc:
+                # 예: ["월요일: 11:00 – 22:00", "화요일: ..."] 중 첫 줄만 사용
+                open_info = weekday_desc[0]
+
+        # 카테고리(대표 타입명)
+        category = p.get("primaryTypeDisplayName") or ""
+
+        # 사진 1장 URL 만들기
+        photo_url = None
+        photos = p.get("photos") or []
+        if photos:
+            # photo 리소스 이름 예: "places/ChIJN1t_tDeuEmsRUsoyG83frY4/photos/..."
+            photo_name = photos[0].get("name")
+            if photo_name:
+                photo_url = (
+                    f"https://places.googleapis.com/v1/{photo_name}/media"
+                    f"?maxHeightPx=400&maxWidthPx=600&key={GOOGLE_PLACES_API_KEY}"
+                )
+
+        # 현재 위치와 거리(km)
+        distance_km = round(calc_distance(lat, lon, plat, plon), 1)
+
+        results.append({
+            "name": name,
+            "lat": plat,
+            "lon": plon,
+            "rating": rating,
+            "address": address,
+            "open_info": open_info,
+            "category": category,
+            "photo_url": photo_url,
+            "distance_km": distance_km,
+        })
+
+    return results
 
 
 # =========================
@@ -2488,15 +2609,17 @@ def api_ip_location():
 # /api/reco 메인 추천 API
 # =========================
 
+# =========================
+# /api/reco 메인 추천 API (Google Places 버전)
+# =========================
+
 @app.route("/api/reco", methods=["POST"])
 def api_reco():
     """
-    위치 + 유저 취향 기반 맛집 추천
-    - DB 기준 상위 N개에서 랜덤 3개
-    - DB에 없으면 카카오 실시간 검색
-    - user_reco_history 테이블에 노출 이력 저장
-    - 같은 전화번호/시간대(time)에 최근 2일간 보여준 place_id는 가급적 제외
-    - 카카오 스크래핑 기준 '영업시간 종료/휴무'로 추정되는 가게는 제외
+    위치 기반 맛집 추천 (Google Places 사용)
+    - 클라이언트에서 보낸 위도/경도를 기준으로 주변 음식점 검색
+    - 상위 몇 개 중에서 최대 3개를 골라 카드용 JSON으로 반환
+    - 프론트(reco.html)는 기존 구조 그대로 사용 가능하도록 필드 이름 맞춤
     """
     data = request.get_json() or {}
     phone = data.get("phone") or ""
@@ -2505,292 +2628,87 @@ def api_reco():
     lat = data.get("lat")
     lon = data.get("lon")
 
-    print("[DEBUG] /api/reco lat,lon =", lat, lon)
-
+    # 1) 위치 값 체크
     try:
         lat = float(lat)
         lon = float(lon)
     except (TypeError, ValueError):
         return jsonify({"error": "위치 정보가 잘못되었습니다."}), 400
 
-    conn = get_conn()
-    cur = conn.cursor()
+    # 2) Google Places에서 주변 음식점 검색
+    places = search_google_places(lat, lon, radius_m=1500, max_results=20)
 
-    try:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_reco_history (
-                id SERIAL PRIMARY KEY,
-                phone_number VARCHAR(50),
-                time_of_day VARCHAR(20),
-                place_id VARCHAR(50),
-                created_at TIMESTAMP DEFAULT NOW()
-            );
-            """
+    if not places:
+        # 주변에 아무 것도 안 나왔을 때
+        return jsonify([])
+
+    # 3) 평점 & 거리 기반 간단 점수 계산 후 상위 몇 개만 사용
+    scored = []
+    for p in places:
+        rating = p.get("rating") or 0
+        dist = p.get("distance_km") or 0
+        # 기본 점수: (평점 * 10 - 거리)
+        score = rating * 10 - dist
+        scored.append((score, p))
+
+    # 점수 높은 순으로 정렬
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    # 상위에서 최대 5개 정도만 후보로 보고
+    top_candidates = [p for _, p in scored[:50]]
+
+    # 이 중에서 최대 3개만 노출 (랜덤 셔플)
+    random.shuffle(top_candidates)
+    picked = top_candidates[:3]
+
+    result = []
+
+    for p in picked:
+        name = p["name"]
+        category = p.get("category") or ""
+        rating = p.get("rating")
+        distance_km = p.get("distance_km")
+        address = p.get("address") or ""
+        open_info = p.get("open_info") or ""
+        photo_url = p.get("photo_url")
+
+        # 대표메뉴 / 요약 문구 (기존 유틸 재사용)
+        base_menu = build_menu_text(name, category)
+        base_summary = build_summary_text(name, category, rating, distance_km)
+
+        # 지금은 카카오 리뷰 대신, 기본 문구 그대로 사용
+        menu = base_menu
+        summary = base_summary
+
+        # 키워드(해시태그) 생성 (선호도 기반 preferred는 일단 False 처리)
+        keywords = build_keywords(
+            category,
+            rating,
+            distance_km,
+            preferred=False,
+            review_text=summary,
         )
-        conn.commit()
 
-        if phone:
-            cur.execute(
-                """
-                SELECT place_id
-                FROM user_reco_history
-                WHERE phone_number = %s
-                  AND time_of_day = %s
-                  AND created_at >= NOW() - INTERVAL '2 days';
-                """,
-                (phone, time_of_day),
-            )
-            history_rows = cur.fetchall()
-            shown_place_ids = {r[0] for r in history_rows if r[0]}
-        else:
-            shown_place_ids = set()
-
-        feedback_prefs = get_user_prefs(phone, cur) if phone else {}
-
-        cur.execute(
-            """
-            SELECT preferences_categories
-            FROM users
-            WHERE phone_number = %s
-            """,
-            (phone,),
+        # 프론트(reco.html)에서 사용하는 필드 구조에 맞게 맞춰줌
+        result.append(
+            {
+                "name": name,
+                "category": category,
+                "rating": rating,
+                "menu": menu,
+                "summary": summary,
+                # Google place id는 직접 쓰지 않고, 카카오맵 버튼은 이름 검색으로 처리할 예정이라 공란
+                "place_id": "",
+                "image_url": photo_url,
+                "distance_km": distance_km,
+                "keywords": keywords,
+                "images": [photo_url] if photo_url else [],
+                "address": address,
+                "open_info": open_info,
+            }
         )
-        row = cur.fetchone()
-        base_prefs = row[0].split(",") if row and row[0] else []
 
-        def pref_boost(category: str) -> float:
-            if not category:
-                return 0.0
-
-            fb_score = feedback_prefs.get(category)
-            if fb_score is not None:
-                return (fb_score - 3.0) * 2.0
-
-            if category in base_prefs:
-                return 2.0
-
-            return 0.0
-
-        cur.execute(
-            """
-            SELECT name, latitude, longitude, category, rating, place_id
-            FROM restaurants
-            WHERE rating >= 3.5;
-            """
-        )
-        rows = cur.fetchall()
-        print("[DEBUG] restaurants rows (rating>=3.5):", len(rows))
-
-        scored_all = []
-        for name, rlat, rlon, category, rating, pid in rows:
-            if not pid:
-                continue
-
-            dist = calc_distance(lat, lon, rlat, rlon)
-            if dist > 3.0:
-                continue
-
-            base_score = (rating or 0) * 10 - dist
-            score = base_score + pref_boost(category)
-            scored_all.append((score, name, rlat, rlon, category, rating, pid))
-        print("[DEBUG] candidates within 3km:", len(scored_all))
-
-        result = []
-        TOP_N = 30
-
-        if scored_all:
-            scored_all.sort(reverse=True, key=lambda x: x[0])
-
-            def filter_by_history(candidates):
-                filtered = []
-                for item in candidates:
-                    _, _, _, _, _, _, pid = item
-                    if pid in shown_place_ids:
-                        continue
-                    filtered.append(item)
-                return filtered
-
-            candidates = scored_all[:TOP_N]
-            filtered = filter_by_history(candidates)
-            use_list = filtered if filtered else candidates
-
-            if len(use_list) > 3:
-                random.shuffle(use_list)
-                picked = use_list[:3]
-            else:
-                picked = use_list
-
-            for _, name, rlat, rlon, category, rating, pid in picked:
-                distance_km = round(calc_distance(lat, lon, rlat, rlon), 1)
-                preferred = category in base_prefs
-
-                address, open_info, is_open = get_kakao_basic_info(pid)
-                if is_open is False:
-                    print(f"[RECO] {name} (pid={pid}) 영업 종료/휴무 추정 → 제외")
-                    continue
-
-                images = get_kakao_images(pid)
-                image_url = images[0] if images else get_kakao_image(pid)
-
-                base_menu = build_menu_text(name, category)
-                base_summary = build_summary_text(name, category, rating, distance_km)
-
-                menu = summarize_review(
-                    pid,
-                    max_len=60,
-                    empty_text=base_menu,
-                )
-                summary = summarize_review(
-                    pid,
-                    max_len=140,
-                    empty_text=base_summary,
-                )
-
-                keywords = build_keywords(
-                    category,
-                    rating,
-                    distance_km,
-                    preferred,
-                    review_text=summary,
-                )
-
-                result.append(
-                    {
-                        "name": name,
-                        "category": category,
-                        "rating": rating,
-                        "menu": menu,
-                        "summary": summary,
-                        "place_id": pid,
-                        "image_url": image_url,
-                        "distance_km": distance_km,
-                        "keywords": keywords,
-                        "images": images,
-                        "address": address,
-                        "open_info": open_info,
-                    }
-                )
-
-                if phone and pid:
-                    cur.execute(
-                        """
-                        INSERT INTO user_reco_history (phone_number, time_of_day, place_id)
-                        VALUES (%s, %s, %s);
-                        """,
-                        (phone, time_of_day, pid),
-                    )
-
-            conn.commit()
-            return jsonify(result)
-
-        print("[API/RECO] DB 기준 3km 안 식당 없음 → 카카오 API 실시간 조회 사용")
-        kakao_places = fetch_restaurants_detailed(lat, lon, radius=3000)
-
-        scored_all_kakao = []
-        for p in kakao_places:
-            pid = p.get("place_id")
-            if not pid:
-                continue
-
-            distance_km = round(
-                calc_distance(lat, lon, p["lat"], p["lon"]), 1
-            )
-            base_score = (p["rating"] or 0) * 10 - distance_km
-            score = base_score + pref_boost(p.get("category"))
-            scored_all_kakao.append((score, p, distance_km))
-
-        if not scored_all_kakao:
-            return jsonify([])
-
-        scored_all_kakao.sort(reverse=True, key=lambda x: x[0])
-
-        candidates = scored_all_kakao[:TOP_N]
-        filtered = []
-        for score, p, distance_km in candidates:
-            pid = p.get("place_id")
-            if pid in shown_place_ids:
-                continue
-            filtered.append((score, p, distance_km))
-
-        use_list = filtered if filtered else candidates
-
-        if len(use_list) > 3:
-            random.shuffle(use_list)
-            picked = use_list[:3]
-        else:
-            picked = use_list
-
-        for _, p, distance_km in picked:
-            pid = p["place_id"]
-
-            address, open_info, is_open = get_kakao_basic_info(pid)
-            if is_open is False:
-                print(f"[RECO] {p['name']} (pid={pid}) 영업 종료/휴무 추정 → 제외")
-                continue
-
-            images = get_kakao_images(pid)
-            image_url = images[0] if images else get_kakao_image(pid)
-
-            base_menu = build_menu_text(p["name"], p["category"])
-            base_summary = build_summary_text(
-                p["name"], p["category"], p["rating"], distance_km
-            )
-
-            menu = summarize_review(
-                pid,
-                max_len=60,
-                empty_text=base_menu,
-            )
-            summary = summarize_review(
-                pid,
-                max_len=140,
-                empty_text=base_summary,
-            )
-
-            keywords = build_keywords(
-                p["category"],
-                p["rating"],
-                distance_km,
-                False,
-                review_text=summary,
-            )
-
-            result.append(
-                {
-                    "name": p["name"],
-                    "category": p["category"],
-                    "rating": p["rating"],
-                    "menu": menu,
-                    "summary": summary,
-                    "place_id": pid,
-                    "image_url": image_url,
-                    "distance_km": distance_km,
-                    "keywords": keywords,
-                    "images": images,
-                    "address": address,
-                    "open_info": open_info,
-                }
-            )
-
-            if phone and pid:
-                cur.execute(
-                    """
-                    INSERT INTO user_reco_history (phone_number, time_of_day, place_id)
-                    VALUES (%s, %s, %s);
-                    """,
-                    (phone, time_of_day, pid),
-                )
-
-        conn.commit()
-        return jsonify(result)
-
-    except Exception as e:
-        print("[API/RECO ERROR]", e)
-        conn.rollback()
-        return jsonify({"error": "서버 오류가 발생했습니다."}), 500
-    finally:
-        conn.close()
+    return jsonify(result)
 
 
 @app.route("/debug/restaurants")
