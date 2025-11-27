@@ -635,37 +635,91 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 # =========================
 
 def extract_menu_from_review(review_text):
+    # 한글 메뉴 키워드
     menu_keywords = [
         "김치찌개", "된장찌개", "불고기", "삼겹살", "갈비", "냉면", "비빔밥",
         "초밥", "스시", "라멘", "우동", "돈카츠", "텐동",
         "짜장면", "짬뽕", "탕수육", "마라탕",
         "파스타", "피자", "리조또", "스테이크",
         "커피", "라떼", "에스프레소", "케이크", "빵",
-        "치킨", "버거"
+        "치킨", "버거", "뷔페"
     ]
+
     found = []
     for kw in menu_keywords:
         if kw in review_text:
             found.append(kw)
-    return found
+
+    # 영어 리뷰에서도 메뉴 뽑아서 한글로 매핑
+    eng_map = {
+        "sushi": "초밥",
+        "ramen": "라멘",
+        "udon": "우동",
+        "pasta": "파스타",
+        "pizza": "피자",
+        "steak": "스테이크",
+        "bbq": "바비큐",
+        "barbecue": "바비큐",
+        "burger": "버거",
+        "sandwich": "샌드위치",
+        "chicken": "치킨",
+        "noodle": "면요리",
+        "curry": "카레",
+        "coffee": "커피",
+        "cake": "케이크",
+        "dessert": "디저트",
+        "buffet": "뷔페",
+    }
+    lower = review_text.lower()
+    for eng, kor in eng_map.items():
+        if eng in lower:
+            found.append(kor)
+
+    # 중복 제거
+    return list(dict.fromkeys(found))
 
 
 def build_menu_text(name, category):
-    if category:
+    # '음식점' 같이 포괄적인 카테고리는 가게 이름 기준 문구 사용
+    if category and category != "음식점":
         return f"{category} 위주의 인기 메뉴를 즐길 수 있는 곳이에요."
     else:
-        return f"{name}만의 대표 메뉴를 즐길 수 있는 곳이에요."
-
+        return f"{name}만의 인기 메뉴를 즐길 수 있는 곳이에요."
+    
 
 def build_summary_text(name, category, rating, distance_km):
-    rating_text = "평균 이상 좋은 평점" if rating and rating >= 4.0 else "무난한 평점"
-    distance_text = "현재 위치와 매우 가까워" if distance_km is not None and distance_km <= 0.5 else "주변에서"
-    cat_text = category if category else "이 곳"
+    """
+    기본 한 줄 요약 텍스트 생성 함수.
+    (구글 리뷰가 없을 때 fallback 용)
+    """
+    # 평점 문구
+    if rating is None:
+        rating_text = "무난한 평점"
+    elif rating >= 4.2:
+        rating_text = "평균 이상 좋은 평점"
+    elif rating >= 3.5:
+        rating_text = "무난한 평점"
+    else:
+        rating_text = "보통 수준의 평점"
+
+    # 거리 문구
+    if distance_km is not None:
+        if distance_km <= 0.3:
+            dist_text = "현재 위치와 매우 가까워"
+        elif distance_km <= 1.0:
+            dist_text = "현재 위치와 가까워"
+        else:
+            dist_text = "주변 위치에서"
+    else:
+        dist_text = "주변 위치에서"
+
+    # 카테고리 문구
+    cat_text = category if category else "다양한 메뉴"
 
     return (
         f"{name}은(는) {cat_text} 메뉴를 즐길 수 있는 곳입니다. "
-        f"{rating_text}을 받고 있으며, {distance_text} 가볍게 방문하기 좋습니다."
-    )
+        f"{rating_text}을 받고 있으며, {dist_text} 가볍게 방문하기 좋습니다."
+    )    
 
 
 def build_keywords(category, rating, distance_km, preferred=False, review_text=""):
@@ -778,7 +832,6 @@ def api_quick_feedback():
     restaurant_name = data.get("restaurant_name")
     category = data.get("category")
     is_good = data.get("is_good")
-    source = data.get("source", "reco_page")
 
     if not phone or not restaurant_name:
         return jsonify({"error": "phone과 restaurant_name은 필수입니다."}), 400
@@ -790,10 +843,10 @@ def api_quick_feedback():
 
     cur.execute(
         """
-        INSERT INTO user_feedback (phone_number, restaurant_name, category, rating, source)
-        VALUES (%s, %s, %s, %s, %s);
+        INSERT INTO user_feedback (phone_number, restaurant_name, category, rating)
+        VALUES (%s, %s, %s, %s);
         """,
-        (phone, restaurant_name, category, rating, source),
+        (phone, restaurant_name, category, rating),
     )
 
     conn.commit()
@@ -801,6 +854,7 @@ def api_quick_feedback():
     conn.close()
 
     return jsonify({"result": "ok"})
+
 
 
 # =========================
@@ -919,6 +973,7 @@ def api_reco():
         unique_places.append(p)
 
     # 4) 카카오맵에 실제로 등록된 곳만 매칭 (place_id 없는 경우 추천 제외)
+    # 4) 카카오맵에 실제로 등록된 곳만 매칭 (place_id 없는 경우 추천 제외)
     candidates = []
     for p in unique_places:
         plat = p.get("lat")
@@ -932,28 +987,40 @@ def api_reco():
             continue
 
         rating = p.get("rating")
-        distance_km = p.get("distance_km")
+
+        # ✅ 거리: 소수점 첫째 자리까지만
+        raw_distance = p.get("distance_km")
+        distance_km = None
+        if raw_distance is not None:
+            try:
+                distance_km = round(float(raw_distance), 1)
+            except (TypeError, ValueError):
+                distance_km = None
+
         address = kakao_addr or p.get("address") or ""
         open_info = p.get("open_info") or ""
         photo_url = p.get("photo_url")
         category = p.get("category") or ""
 
+        # 구글 리뷰 문자열 리스트
         reviews = p.get("reviews") or []
         review_texts = [r for r in reviews if isinstance(r, str)]
 
+        # 가게 이름 정리
         name = name_ko or raw_name or "이름 없음"
 
+        # ✅ 한 줄 리뷰: 구글 리뷰 기반으로 (한글 우선, 없으면 영어)
         if review_texts:
-            first = review_texts[0].replace("\\n", " ").strip()
-            if re.search(r"[가-힣]", first):
-                if len(first) > 80:
-                    first = first[:80].rstrip() + "..."
-                summary = first
-            else:
-                summary = build_summary_text(name, category, rating, distance_km)
+            kr_reviews = [txt for txt in review_texts if re.search(r"[가-힣]", txt)]
+            chosen = kr_reviews[0] if kr_reviews else review_texts[0]
+            chosen = chosen.replace("\\n", " ").strip()
+            if len(chosen) > 80:
+                chosen = chosen[:80].rstrip() + "..."
+            summary = chosen
         else:
             summary = build_summary_text(name, category, rating, distance_km)
 
+        # ✅ 대표 메뉴: 강화된 extract_menu_from_review 사용
         menus = []
         for txt in review_texts:
             menus += extract_menu_from_review(txt)
@@ -1008,10 +1075,10 @@ def api_reco():
                 "category": category,
                 "rating": rating,
                 "menu": menu,
-                "summary": summary,
+                "summary": summary,   # ✅ 항상 리뷰 기반
                 "place_id": kakao_place_id,
                 "image_url": photo_url,
-                "distance_km": distance_km,
+                "distance_km": distance_km,  # ✅ 0.1km 단위
                 "keywords": keywords,
                 "images": [photo_url] if photo_url else [],
                 "address": address,
@@ -1020,11 +1087,13 @@ def api_reco():
             }
         )
 
+
     if not candidates:
         if conn:
             conn.close()
         return jsonify([])
 
+    # 6) 최근 2일 내에 이미 추천한 가게는 최대한 제외
     # 6) 최근 2일 내에 이미 추천한 가게는 최대한 제외
     filtered_candidates = []
     if recent_names_2d:
@@ -1034,10 +1103,21 @@ def api_reco():
     else:
         filtered_candidates = list(candidates)
 
+    # 기본은 최근 2일 안 나온 집들만
     if filtered_candidates:
-        pool = filtered_candidates
+        pool = list(filtered_candidates)
     else:
-        pool = candidates
+        pool = list(candidates)
+
+    # ✅ 최소 3개는 채우기 위해, 부족하면 예전에 추천한 집도 다시 섞어서 포함
+    if len(pool) < 3:
+        existing_names = {c["name"] for c in pool}
+        for c in candidates:
+            if c["name"] not in existing_names:
+                pool.append(c)
+                existing_names.add(c["name"])
+            if len(pool) >= 3:
+                break
 
     # 7) 점수 기준 상위 50개 중 랜덤 3개
     pool.sort(key=lambda x: x.get("score", 0), reverse=True)
@@ -1047,6 +1127,7 @@ def api_reco():
 
     for c in picked:
         c.pop("score", None)
+
 
     # 8) 추천 로그 기록
     if phone and conn and cur:
@@ -1102,7 +1183,8 @@ def go_kakao_map():
     lon = request.args.get("lon")
 
     if place_id:
-        url = f"https://map.kakao.com/?itemId={place_id}"
+        # ✅ 장소 상세 페이지로 바로 이동 (웹/앱 모두 가게 정보 노출)
+        url = f"https://place.map.kakao.com/{place_id}"
         return redirect(url)
 
     if lat and lon:
@@ -1115,6 +1197,7 @@ def go_kakao_map():
             pass
 
     return redirect("https://map.kakao.com/")
+
 
 
 if __name__ == "__main__":
