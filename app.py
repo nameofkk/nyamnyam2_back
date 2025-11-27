@@ -158,16 +158,13 @@ def _extract_rating_from_json(obj):
 def get_kakao_rating(place_id):
     """
     카카오맵 place_id로 실제 평점 가져오기
-    1순위: JSON API (https://place.map.kakao.com/main/v/{id}) 전체를 훑어서 score/rating 후보 추출
-    2순위: 기존 HTML 파싱(em.num_rate)
-    실패하면 None 리턴 (임의로 4.0 넣지 않음)
+    1순위: JSON API 전체를 훑어서 score/rating 후보 추출
+    2순위: HTML 파싱(em.num_rate)
+    실패하면 None
     """
     # 1) JSON 기반 시도
     try:
-        api_url = f"https://place.map.kakao.com/main/v/{place_id}"
-        resp = requests.get(api_url, timeout=3)
-        data = resp.json()
-
+        data = fetch_kakao_place_json(place_id)
         rating = _extract_rating_from_json(data)
         if rating is not None:
             return float(rating)
@@ -2381,6 +2378,35 @@ def build_summary_text(name, category, rating, distance_km):
 # =========================
 # 카카오맵 스크래핑 유틸
 # =========================
+def fetch_kakao_place_json(place_id):
+    """
+    카카오 place main/v JSON을 브라우저처럼 헤더를 달아서 요청
+    - JSON 파싱 실패 시 예외 발생
+    """
+    api_url = f"https://place.map.kakao.com/main/v/{place_id}"
+    headers = {
+        # 실제 브라우저 비슷하게 보내기
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        ),
+        "Referer": f"https://place.map.kakao.com/{place_id}",
+        "Accept": "application/json, text/plain, */*",
+    }
+
+    resp = requests.get(api_url, headers=headers, timeout=5)
+
+    if resp.status_code != 200:
+        raise ValueError(f"status={resp.status_code}")
+
+    text = resp.text.strip()
+    if not text:
+        raise ValueError("empty body")
+
+    # JSON이 아니면 여기서 에러 발생 → 호출한 쪽에서 잡음
+    return resp.json()
+
 
 def _normalize_url(u: str) -> str:
     if not u:
@@ -2415,23 +2441,21 @@ def get_kakao_images(place_id, limit=5):
 
     # 1) JSON에서 대표 사진 가져오기
     try:
-        api_url = f"https://place.map.kakao.com/main/v/{place_id}"
-        resp = requests.get(api_url, timeout=3)
-        data = resp.json()
-        basic = (data.get("basicInfo") or
-                 data.get("basicinfo") or {})
+        data = fetch_kakao_place_json(place_id)
+        basic = (data.get("basicInfo") or data.get("basicinfo") or {})
 
-        # 기존 mainphotourl 계열
         photo_candidates = []
+
+        # mainphoto 관련 필드
         for key in basic.keys():
             if "mainphoto" in key.lower():
                 photo_candidates.append(basic[key])
 
-        # photo 블록 우선 시도
+        # photo 블록
         if "photo" in basic and isinstance(basic["photo"], dict):
             lst = basic["photo"].get("list") or basic["photo"].get("photoList") or []
             if isinstance(lst, list):
-                for item in lst[:3]:
+                for item in lst[:5]:
                     if not isinstance(item, dict):
                         continue
                     for k in ("orgurl", "url", "thumbnail"):
@@ -2439,7 +2463,7 @@ def get_kakao_images(place_id, limit=5):
                         if v:
                             photo_candidates.append(v)
 
-        # JSON 전체에서 이미지 URL 추가 수집
+        # JSON 전체에서 추가 이미지 URL
         json_urls = _extract_image_urls_from_json(data)
         photo_candidates.extend(json_urls)
 
@@ -2454,6 +2478,7 @@ def get_kakao_images(place_id, limit=5):
 
     except Exception as e:
         print(f"[이미지 JSON 스크래핑 오류] id={place_id} → {e}")
+
 
     # 2) HTML 내 이미지 추가 수집 (JSON만으로 부족할 때)
     if len(urls) < limit:
@@ -2590,11 +2615,8 @@ def get_kakao_basic_info(place_id):
 
     # 1) JSON 시도
     try:
-        api_url = f"https://place.map.kakao.com/main/v/{place_id}"
-        resp = requests.get(api_url, timeout=3)
-        data = resp.json()
-        basic = (data.get("basicInfo") or
-                 data.get("basicinfo") or {})
+        data = fetch_kakao_place_json(place_id)
+        basic = (data.get("basicInfo") or data.get("basicinfo") or {})
 
         # 주소 후보
         addr_candidates = [
@@ -2613,7 +2635,6 @@ def get_kakao_basic_info(place_id):
         open_info_candidates = []
         openhour = basic.get("openHour") or basic.get("openhour") or {}
         if isinstance(openhour, dict):
-            # 예: {"realtime": "영업중", "text": "10:00 - 21:00"}
             for k in ("realtime", "text", "period", "info"):
                 v = openhour.get(k)
                 if v:
@@ -2632,6 +2653,7 @@ def get_kakao_basic_info(place_id):
 
     except Exception as e:
         print(f"[기본정보 JSON 스크래핑 오류] id={place_id} → {e}")
+
 
     # 2) 주소/영업시간이 여전히 없으면 HTML fallback
     try:
