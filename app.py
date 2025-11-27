@@ -1824,9 +1824,6 @@ def submit_feedback():
 # =========================
 # /reco 랜딩 페이지
 # =========================
-
-from flask import render_template_string, request
-
 @app.route("/reco")
 def reco_page():
     phone = request.args.get("phone", "")
@@ -2672,7 +2669,6 @@ function setupCarousel() {
 """
 
     return render_template_string(html, phone=phone, time=time)
-
 
 @app.route("/admin/users/update", methods=["POST"])
 def admin_update_user():
