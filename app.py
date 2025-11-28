@@ -1496,9 +1496,39 @@ def signup():
 
 @app.route("/reco")
 def reco_page():
-    phone = request.args.get("phone", "")
-    time_of_day = request.args.get("time", "")
-    return render_template("reco.html", phone=phone, time=time_of_day)
+    phone = (request.args.get("phone") or "").strip()
+    time_of_day = (request.args.get("time") or "").strip()
+
+    signup_lat = None
+    signup_lon = None
+    has_signup_location = False
+
+    if phone:
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT latitude, longitude FROM users WHERE phone_number = %s",
+                (phone,),
+            )
+            row = cur.fetchone()
+            if row and row[0] is not None and row[1] is not None:
+                signup_lat, signup_lon = float(row[0]), float(row[1])
+                has_signup_location = True
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print("[RECO_PAGE_USER_LOCATION_ERR]", e)
+
+    return render_template(
+        "reco.html",
+        phone=phone,
+        time=time_of_day,
+        signup_lat=signup_lat,
+        signup_lon=signup_lon,
+        has_signup_location=has_signup_location,
+    )
+
 
 # =========================
 # 관리자 페이지
@@ -2465,8 +2495,8 @@ def cron_send_feedback():
     외부 크론에서:
       GET /cron/send-feedback?time=점심
 
-    - recommendation_logs 에 오늘 날짜 + 해당 time 으로 추천이 나갔고
-    - 그 중 한 가게 이상에 대해 user_feedback 에서 '좋아요(5점)'가 찍힌 사용자만
+    - 오늘 해당 time에 추천 나간 사람 중
+    - 최소 1곳 이상 '좋아요(5점)' 남긴 사용자에게
       피드백 알림톡 발송
     """
     time_label = (request.args.get("time") or "").strip()
@@ -2479,8 +2509,6 @@ def cron_send_feedback():
     conn = get_conn()
     cur = conn.cursor()
     try:
-        # ✅ 오늘 해당 시간대에 추천 나갔고,
-        #    그 추천 목록 중 하나 이상에 '좋아요(5점)'가 있는 사용자만 추출
         cur.execute(
             """
             SELECT DISTINCT rl.phone_number
@@ -2490,7 +2518,7 @@ def cron_send_feedback():
              AND uf.restaurant_name = rl.restaurant_name
             WHERE rl.time_of_day = %s
               AND rl.created_at::date = CURRENT_DATE
-              AND uf.rating >= 5         -- 좋아요(5점)만
+              AND uf.rating >= 5
               AND uf.created_at::date = CURRENT_DATE
             """,
             (time_label,),
@@ -2505,17 +2533,25 @@ def cron_send_feedback():
 
     for p in phones:
         ok, res = send_feedback_message(p, time_label)
+
+        # 상세 응답은 서버 로그에만 남김
+        print("[CRON_FEEDBACK]", "phone=", p, "ok=", ok, "res=", res)
+
         if ok:
             sent.append(p)
         else:
-            failed.append({"phone": p, "res": res})
+            failed.append(p)  # ← 번호만 저장 (가볍게)
+
+    # 실패 번호도 너무 많으면 잘라서 리턴 (안전빵)
+    failed_sample = failed[:50]
 
     return jsonify({
         "result": "ok",
         "time": time_label,
+        "target_count": len(phones),
         "sent_count": len(sent),
         "failed_count": len(failed),
-        "failed": failed,
+        "failed_sample": failed_sample,  # 최대 50개까지만
     })
 
 
