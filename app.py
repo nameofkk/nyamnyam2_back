@@ -681,7 +681,9 @@ def send_welcome_message(phone: str):
     #   버튼 JSON은 여기 넣지 않고 send_alimtalk에서 button_1로 전송
     message = (
         "냠냠이 서비스를 신청 해주셔서 감사 드립니다(축하).\n"
+        "\n"
         "앞으로 고객님께서 신청하신 취향/시간대 별로 주변 맛집을 골라서 추천 드릴 예정입니다!\n"
+        "\n"
         "우리 같이 맛있는 생활 해봐요. 냠냠(밥)"
     )
 
@@ -706,10 +708,9 @@ def send_reco_message(phone: str, time_label: str):
     #    실제 값(time_label, phone)으로 치환해서 보냄
     message = (
         f"냠냠, 오늘의 추천 {time_label} 맛집이 도착했어요!\n"
+        "\n"
         "오늘은 어떤 음식을 먹어 볼까요?\n"
         f"알림 받는 연락처: {phone}\n"
-        "해당 메세지는 고객님께서 신청하신 주변 맛집 추천 알림으로, "
-        "고객님이 요청하신 시간대에 발송됩니다."
     )
 
     return send_alimtalk(
