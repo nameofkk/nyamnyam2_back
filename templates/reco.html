@@ -92,7 +92,7 @@
       font-size: 12px;
       color: #999;
       line-height: 1.5;
-      min-height: 2.4em; /* 두 줄 정도 공간 확보해서 깜빡임 줄이기 */
+      min-height: 2.4em;
     }
 
     @keyframes spin {
@@ -101,7 +101,7 @@
 
     /* 카드 리스트 */
     #cards {
-      display: none; /* 처음에는 숨김 */
+      display: none; /* 처음엔 숨김 */
       width: 100%;
       max-width: 1100px;
       margin-top: 28px;
@@ -132,17 +132,16 @@
     }
 
     .address {
-  font-size: 12px;
-  color: #777;
-  margin-top: 6px;
-  line-height: 1.4;
-}
-.open-info {
-  font-size: 11px;
-  color: #999;
-  margin-top: 2px;
-}
-
+      font-size: 12px;
+      color: #777;
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+    .open-info {
+      font-size: 11px;
+      color: #999;
+      margin-top: 2px;
+    }
 
     /* 반응 오버레이 */
     .reaction-overlay {
@@ -186,7 +185,7 @@
       }
     }
 
-        /* 썸네일 영역 */
+    /* 썸네일 영역 */
     .thumb {
       width: 100%;
       height: 180px;
@@ -195,16 +194,15 @@
       background: #f2f3f6;
     }
 
-    /* 슬라이더 컨테이너 */
     .thumb-inner {
       position: relative;
       width: 100%;
       height: 100%;
       display: flex;
       flex-direction: row;
-      overflow-x: auto;                 /* 가로 스크롤 */
-      scroll-snap-type: x mandatory;    /* 한 장씩 딱딱 붙게 */
-      -webkit-overflow-scrolling: touch;/* 모바일 자연스러운 스크롤 */
+      overflow-x: auto;
+      scroll-snap-type: x mandatory;
+      -webkit-overflow-scrolling: touch;
       border-radius: 18px;
     }
 
@@ -212,20 +210,18 @@
       display: none;
     }
 
-    /* 슬라이드 한 장 */
     .main-photo {
       flex: 0 0 100%;
       width: 100%;
       height: 100%;
       object-fit: cover;
       display: block;
-      scroll-snap-align: center;        /* 가운데에 딱 맞게 */
+      scroll-snap-align: center;
       transform: scale(1.03);
       user-select: none;
       -webkit-user-drag: none;
     }
 
-    /* 이미지 슬라이드용 화살표 */
     .thumb-arrow {
       position: absolute;
       top: 50%;
@@ -262,7 +258,7 @@
       padding: 4px 9px;
       border-radius: 999px;
     }
-    /* 카드 본문 */
+
     .card-body {
       padding: 16px 18px 16px;
       display: flex;
@@ -380,7 +376,6 @@
       cursor: default;
     }
 
-    /* PC에서 카드 3개 꽉 차게 보이도록 */
     @media (min-width: 1024px) {
       .page-wrap {
         padding-top: 80px;
@@ -405,6 +400,10 @@
         <span>·</span>
         <span>카카오맵·구글맵 연동</span>
       </div>
+      <!-- ✅ 위치 실패 시 노출되는 안내 문구 -->
+      <div id="location-notice"
+           style="margin-top: 6px; font-size: 12px; color: #c05621; display: none;">
+      </div>
     </div>
 
     <div id="loading">
@@ -420,12 +419,22 @@
     const phone = "{{ phone }}";
     const timeOfDay = "{{ time }}";
 
+    const signupLat = "{{ signup_lat|default('') }}";
+    const signupLon = "{{ signup_lon|default('') }}";
+    const hasSignupLocation = "{{ has_signup_location|default('false') }}";
+
+    const signupLatNum = signupLat === "" ? null : Number(signupLat);
+    const signupLonNum = signupLon === "" ? null : Number(signupLon);
+    const hasSignupLocationBool = hasSignupLocation === "true";
+
+
+  
     const loadingEl = document.getElementById("loading");
     const loadingMainEl = document.getElementById("loading-main");
     const loadingFactEl = document.getElementById("loading-fact");
     const cardsEl = document.getElementById("cards");
+    const locationNoticeEl = document.getElementById("location-notice");
 
-    // 음식 관련 잡지식들
     const funFacts = [
       "한국인은 1년에 라면을 1인당 70개 이상 먹는다고 알려져 있어요.",
       "짜장면은 중국 본토보다 한국에서 더 발전한 '중화요리' 메뉴예요.",
@@ -438,13 +447,11 @@
 
     let factTimer = null;
 
-function setLoadingText(text) {
-  if (loadingMainEl) {
-    loadingMainEl.innerText = text;
-  }
-  // ✔ 더 이상 loadingEl.style.display = "block"; 을 실행하지 않음
-  //   (이게 여러 번 실행될 때 화면이 리셋되어 잡지식이 사라지고 있었음)
-}
+    function setLoadingText(text) {
+      if (loadingMainEl) {
+        loadingMainEl.innerText = text;
+      }
+    }
 
     function startFunFacts() {
       if (!loadingFactEl || funFacts.length === 0) return;
@@ -455,7 +462,7 @@ function setLoadingText(text) {
       factTimer = setInterval(() => {
         idx = (idx + 1) % funFacts.length;
         loadingFactEl.innerText = funFacts[idx];
-      }, 4000); // 4초마다 변경
+      }, 4000);
     }
 
     function stopFunFacts() {
@@ -468,33 +475,64 @@ function setLoadingText(text) {
     document.addEventListener("DOMContentLoaded", start);
 
     function start() {
-      console.log("[RECO] start()");
+      console.log("[RECO] start() / phone =", phone, "/ time =", timeOfDay);
       startFunFacts();
 
       if (!navigator.geolocation) {
-        setLoadingText("위치 정보를 지원하지 않습니다. 기본 위치로 추천합니다.");
-        fetchReco(33.462046, 126.329235);
+        console.warn("[RECO] navigator.geolocation NOT supported");
+        useSignupOrDefaultLocation("NOT_SUPPORTED");
         return;
       }
 
       let called = false;
 
-      function go(lat, lon) {
+      function go(lat, lon, source) {
         if (called) return;
         called = true;
-        console.log("[RECO] 위치 사용:", lat, lon);
-        fetchReco(lat, lon);
+        console.log("[RECO] go() lat =", lat, "lon =", lon, "source =", source);
+        fetchReco(lat, lon, source);
+      }
+
+      function useSignupOrDefaultLocation(reason) {
+        console.warn("[RECO] fallback to signup/default. reason =", reason);
+
+        if (hasSignupLocation && signupLat !== null && signupLon !== null) {
+          if (locationNoticeEl) {
+            locationNoticeEl.style.display = "block";
+            locationNoticeEl.innerText =
+              "현재 위치 정보 수집에 실패하여, 신청 시 설정하신 위치 기준으로 맛집을 추천해 드립니다. " +
+              "브라우저에서 위치 권한을 허용해 주시면 더 정확한 추천을 받으실 수 있어요.";
+          }
+          setLoadingText("신청 시 설정한 위치 기준으로 주변 맛집을 불러오는 중입니다...");
+          go(signupLat, signupLon, "signup");
+        } else {
+          if (locationNoticeEl) {
+            locationNoticeEl.style.display = "block";
+            locationNoticeEl.innerText =
+              "현재 위치 정보 수집에 실패했고, 신청 시 설정한 위치가 없어 기본 지역 기준으로 맛집을 추천해 드립니다. " +
+              "브라우저에서 위치 권한을 허용해 주시면 더 정확한 추천을 받으실 수 있어요.";
+          }
+          setLoadingText("기본 지역 기준으로 주변 맛집을 불러오는 중입니다...");
+          go(33.462046, 126.329235, "default");
+        }
       }
 
       try {
         navigator.geolocation.getCurrentPosition(
           (pos) => {
-            go(pos.coords.latitude, pos.coords.longitude);
+            console.log("[RECO] geolocation SUCCESS", {
+              lat: pos.coords.latitude,
+              lon: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
+            });
+            go(pos.coords.latitude, pos.coords.longitude, "gps");
           },
           (err) => {
-            console.error("[RECO] 위치 오류:", err);
-            setLoadingText("위치를 가져오지 못했습니다. 기본 위치로 추천합니다.");
-            go(33.462046, 126.329235);
+            console.error("[RECO] geolocation ERROR", {
+              code: err.code,
+              message: err.message,
+            });
+            useSignupOrDefaultLocation("ERROR_" + err.code);
           },
           {
             enableHighAccuracy: true,
@@ -503,21 +541,19 @@ function setLoadingText(text) {
           }
         );
       } catch (e) {
-        console.error("[RECO] 위치 API 예외:", e);
-        setLoadingText("위치 정보를 사용할 수 없습니다. 기본 위치로 추천합니다.");
-        go(33.462046, 126.329235);
+        console.error("[RECO] geolocation EXCEPTION", e);
+        useSignupOrDefaultLocation("EXCEPTION");
       }
 
       setTimeout(() => {
         if (!called) {
-          console.warn("[RECO] 위치 응답 지연 → 기본 좌표 사용");
-          setLoadingText("위치 응답이 느립니다. 기본 위치로 추천합니다.");
-          go(33.462046, 126.329235);
+          console.warn("[RECO] geolocation TIMEOUT 8s");
+          useSignupOrDefaultLocation("TIMEOUT_8S");
         }
       }, 8000);
     }
 
-    function fetchReco(lat, lon) {
+    function fetchReco(lat, lon, source) {
       setLoadingText("주변 맛집을 불러오는 중입니다...");
       cardsEl.style.display = "none";
       cardsEl.innerHTML = "";
@@ -530,6 +566,7 @@ function setLoadingText(text) {
           time: timeOfDay,
           lat: lat,
           lon: lon,
+          source: source || "unknown",
         }),
       })
         .then((r) => {
@@ -540,7 +577,6 @@ function setLoadingText(text) {
         .catch((err) => {
           console.error("[RECO] API 오류:", err);
           setLoadingText("추천 정보를 불러오지 못했습니다. 새로고침 후 다시 시도해주세요.");
-          // 에러가 나도 잡지식은 계속 돌아가게 그대로 둠
         });
     }
 
@@ -549,7 +585,6 @@ function setLoadingText(text) {
 
       if (!Array.isArray(data) || data.length === 0) {
         setLoadingText("근처 추천 맛집을 찾지 못했습니다.");
-        // 이런 경우에도 로딩은 끝난 상태이니 잡지식은 멈추는 편이 자연스러움
         stopFunFacts();
         cardsEl.style.display = "none";
         return;
@@ -582,7 +617,6 @@ function setLoadingText(text) {
           item.image_url ||
           "https://t1.daumcdn.net/localimg/localimages/07/mapapidoc/thumnail.png";
 
-                  // ✅ 슬라이더용 이미지 배열 (없으면 대표 1장만)
         const images =
           (item.images && item.images.length > 0)
             ? item.images
@@ -603,10 +637,6 @@ function setLoadingText(text) {
           "&name=" +
           encodeURIComponent(item.name || "");
 
-
-const address = item.address ? item.address : "주소 정보 없음";
-const openInfo = item.open_info ? item.open_info : "";
-
         card.innerHTML = `
           <div class="reaction-overlay">
             <div class="reaction-emoji">😆</div>
@@ -623,7 +653,6 @@ const openInfo = item.open_info ? item.open_info : "";
             </div>
             ${distanceText ? `<div class="thumb-badge">${distanceText}</div>` : ""}
           </div>
-
 
           <div class="card-body">
             <div class="card-title">${item.name || ""}</div>
@@ -689,12 +718,11 @@ const openInfo = item.open_info ? item.open_info : "";
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           phone: phone,
-          restaurant_name: item.name,  // ✅ 백엔드에서 우선 사용하는 필드
+          restaurant_name: item.name,
           category: item.category,
-          is_good: isLike,             // ✅ 백엔드에서 읽는 필드명
+          is_good: isLike,
         }),
       })
-
         .then((r) => r.json())
         .then((res) => {
           if (res && res.result === "ok") {
@@ -709,7 +737,6 @@ const openInfo = item.open_info ? item.open_info : "";
             alert("피드백 저장에 실패했습니다.");
           }
         })
-
         .catch((err) => {
           console.error("[QUICK_FEEDBACK_ERROR]", err);
           alert("피드백 저장에 실패했습니다.");
