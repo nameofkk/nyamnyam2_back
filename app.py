@@ -675,7 +675,7 @@ def send_welcome_message(phone: str):
 
     # 템플릿에 등록한 제목과 최대한 동일하게
     # (subject_1는 템플릿 검사 대상이 아니지만, 보기 좋게 맞춰줌)
-    subject = "#{emtitle_1}냠냠이 맛집 알림 서비스 안내"
+    subject = "#{emtitle_1}냠냠, 환영해요!"
 
     # ⚠ message_1 은 템플릿 본문과 동일해야 함
     #   버튼 JSON은 여기 넣지 않고 send_alimtalk에서 button_1로 전송
