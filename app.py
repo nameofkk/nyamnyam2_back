@@ -2756,6 +2756,16 @@ def go_kakao_map():
 def my_ip():
     return requests.get("https://api.ipify.org").text
 
+@app.route("/debug/aligo")
+def debug_aligo():
+    return {
+        "API_KEY": ALIGO_API_KEY,
+        "USER_ID": ALIGO_USER_ID,
+        "SENDER_KEY": ALIGO_SENDER_KEY,
+        "SENDER": ALIGO_SENDER,
+        "TESTMODE": ALIGO_TESTMODE,
+        "BASE_SERVER_URL": BASE_SERVER_URL,
+    }
 
 
 if __name__ == "__main__":
