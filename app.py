@@ -1,6 +1,7 @@
 from asyncio import open_connection
 import os
 import math
+import json        # ⬅⬅⬅ 요기!! 딱 여기 넣으면 됨
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import requests
@@ -28,11 +29,17 @@ DB_NAME = os.getenv("DB_NAME", "nyamnyam")
 
 KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "f2f3a9c2b5d912ae8a0c5ff0548b0aa6")
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "AIzaSyAox_CWmpe4klOp48vfgRk9JX8vTAQ_guard")
-ALIGO_API_KEY = os.getenv("ALIGO_API_KEY", "YOUR_ALIGO_API_KEY")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "changeme")
 
 
-BASE_SERVER_URL = os.getenv("SERVER_BASE_URL", "http://127.0.0.1:5000")
+BASE_SERVER_URL = os.getenv("SERVER_BASE_URL")
+
+# ==== ALIGO 설정 ====
+ALIGO_API_KEY = os.getenv("ALIGO_API_KEY", "")        # 알리고 API Key
+ALIGO_USER_ID = os.getenv("ALIGO_USER_ID", "")        # 알리고 User ID
+ALIGO_SENDER_KEY = os.getenv("ALIGO_SENDER_KEY", "")  # 승인된 발신프로필 SenderKey
+ALIGO_SENDER = os.getenv("ALIGO_SENDER", "")          # 알리고에 등록된 발신번호 (카톡채널)
+ALIGO_TESTMODE = os.getenv("ALIGO_TESTMODE", "N")     # 테스트 모드면 "Y"
 
 
 # =========================
@@ -571,6 +578,184 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
         )
 
     return results
+
+# ================== ALIGO 공통 유틸 =========================
+
+def get_aligo_token():
+    """알리고 토큰 발급"""
+    if not ALIGO_API_KEY or not ALIGO_USER_ID:
+        app.logger.error("[ALIGO] APIKEY / USERID 미설정")
+        return None
+
+    url = "https://kakaoapi.aligo.in/akv10/token/create/30/s/"
+    data = {
+        "apikey": ALIGO_API_KEY,
+        "userid": ALIGO_USER_ID,
+    }
+
+    try:
+        r = requests.post(url, data=data, timeout=5)
+        r.raise_for_status()
+        js = r.json()
+    except Exception as e:
+        app.logger.exception("[ALIGO] token 요청 실패: %s", e)
+        return None
+
+    if js.get("code") != 0:
+        app.logger.error("[ALIGO] token 발급 실패: %s", js)
+        return None
+
+    return js.get("token")
+
+
+def send_alimtalk(template_code, receiver, subject, message,
+                  btn_mobile_url=None, btn_pc_url=None, btn_name="자세히 보기"):
+    """알리고 알림톡 공통 발송 함수"""
+    token = get_aligo_token()
+    if not token:
+        return False, {"msg": "TOKEN_ERROR"}
+
+    if not (ALIGO_SENDER_KEY and ALIGO_SENDER):
+        app.logger.error("[ALIGO] SENDER_KEY / SENDER 미설정")
+        return False, {"msg": "CONFIG_ERROR"}
+
+    url = "https://kakaoapi.aligo.in/akv10/alimtalk/send/"
+
+    payload = {
+        "apikey": ALIGO_API_KEY,
+        "userid": ALIGO_USER_ID,
+        "senderkey": ALIGO_SENDER_KEY,
+        "token": token,
+        "tpl_code": template_code,
+        "sender": ALIGO_SENDER,
+        "receiver_1": receiver,
+        "subject_1": subject,
+        "message_1": message,
+        "failover": "N",
+    }
+
+    # 테스트 모드
+    if ALIGO_TESTMODE.upper() == "Y":
+        payload["testMode"] = "Y"
+
+    # 버튼(웹 링크) 세팅
+    if btn_mobile_url or btn_pc_url:
+        mobile = btn_mobile_url or btn_pc_url
+        pc = btn_pc_url or btn_mobile_url or btn_mobile_url
+        button_obj = {
+            "button": [
+                {
+                    "name": btn_name,
+                    "linkType": "WL",
+                    "linkM": mobile,
+                    "linkP": pc,
+                }
+            ]
+        }
+        payload["button_1"] = json.dumps(button_obj, ensure_ascii=False)
+
+    try:
+        r = requests.post(url, data=payload, timeout=5)
+        r.raise_for_status()
+        js = r.json()
+    except Exception as e:
+        app.logger.exception("[ALIGO] 발송 예외: %s", e)
+        return False, {"msg": "EXCEPTION"}
+
+    app.logger.info("[ALIGO] 발송 결과: %s", js)
+    return js.get("code") == 0, js
+
+
+# ================== 알림톡 3종 래퍼 =========================
+
+def send_welcome_message(phone: str):
+    """1) 웰컴 알림톡 (템플릿코드 UD_8456)"""
+    if not phone:
+        return False, {"msg": "NO_PHONE"}
+
+    # 템플릿에 등록한 제목과 최대한 동일하게
+    # (subject_1는 템플릿 검사 대상이 아니지만, 보기 좋게 맞춰줌)
+    subject = "#{emtitle_1}냠냠이 맛집 알림 서비스 안내"
+
+    # ⚠ message_1 은 템플릿 본문과 동일해야 함
+    #   버튼 JSON은 여기 넣지 않고 send_alimtalk에서 button_1로 전송
+    message = (
+        "냠냠이 서비스를 신청 해주셔서 감사 드립니다(축하).\n"
+        "앞으로 고객님께서 신청하신 취향/시간대 별로 주변 맛집을 골라서 추천 드릴 예정입니다!\n"
+        "우리 같이 맛있는 생활 해봐요. 냠냠(밥)"
+    )
+
+    # 웰컴 템플릿은 버튼이 '채널 추가(AC)' 고정이라면
+    # 여기서 btn_* 를 안 보내도 되고, 보내도 링크만 무시될 수 있음.
+    # (템플릿 버튼이 고정 AC라면 그냥 버튼 없이 보내도 템플릿 버튼이 노출됨)
+    return send_alimtalk("UD_8456", phone, subject, message)
+
+
+def send_reco_message(phone: str, time_label: str):
+    """2) 맛집 추천 알림톡 (템플릿코드 UD_8444)"""
+    if not phone or not time_label:
+        return False, {"msg": "PARAM_ERROR"}
+
+    base_url = BASE_SERVER_URL.rstrip("/") if BASE_SERVER_URL else ""
+    link = f"{base_url}/reco?phone={phone}&time={time_label}"
+
+    # 템플릿 제목과 동일하게
+    subject = "오늘의 추천 맛집이 도착했어요"
+
+    # 템플릿 본문과 동일 (#{time}, #{phone_number} 는 템플릿 변수로 그대로 둠)
+    message = (
+        "냠냠, 오늘의 추천 #{time} 맛집이 도착했어요!\n"
+        "오늘은 어떤 음식을 먹어 볼까요?\n"
+        "알림 받는 연락처: #{phone_number}"
+    )
+
+    # 버튼 정보는 send_alimtalk에서 button_1 JSON으로 전달
+    # 템플릿에 등록된 버튼:
+    # name: "과연 오늘의 밥은?"
+    # linkType: "WL"
+    # linkPc / linkMo: https://nyamnyam2-back.onrender.com/reco?phone=#{phone}&time=#{time}
+    # → 여기서는 #{phone}, #{time} 자리에 실제 값이 들어간 동일 형식의 URL을 보냄
+    return send_alimtalk(
+        "UD_8444",
+        phone,
+        subject,
+        message,
+        btn_mobile_url=link,
+        btn_pc_url=link,
+        btn_name="과연 오늘의 밥은?",
+    )
+
+
+def send_feedback_message(phone: str, time_label: str):
+    """3) 피드백 요청 알림톡 (템플릿코드 UD_8446)"""
+    if not phone or not time_label:
+        return False, {"msg": "PARAM_ERROR"}
+
+    base_url = BASE_SERVER_URL.rstrip("/") if BASE_SERVER_URL else ""
+    link = f"{base_url}/feedback-form?phone={phone}&time={time_label}"
+
+    # 템플릿에 등록한 제목과 일치
+    subject = "#{emtitle_1}오늘 방문하신 맛집은 어떠셨나요?"
+
+    # 템플릿 본문과 동일 (문구 주의)
+    message = (
+        "피드백과 리뷰를 남겨 주시면 다음 추천때 냠냠이가 고객님의 취향에 알맞는 음식점을 잘 찾아드려요!"
+    )
+
+    # 템플릿 버튼:
+    # name: "피드백 남기러가기!"
+    # linkType: "WL"
+    # linkPc / linkMo: https://nyamnyam2-back.onrender.com/feedback-form?phone=#{phone}&time=#{time}
+    # → 여기서는 #{phone}, #{time} 자리에 실제 값이 들어간 동일 형식의 URL을 보냄
+    return send_alimtalk(
+        "UD_8446",
+        phone,
+        subject,
+        message,
+        btn_mobile_url=link,
+        btn_pc_url=link,
+        btn_name="피드백 남기러가기!",
+    )
 
 
 # =========================
@@ -2072,6 +2257,117 @@ def submit_feedback():
     finally:
         if conn:
             conn.close()
+
+@app.route("/cron/send-reco", methods=["GET"])
+def cron_send_reco():
+    """
+    외부 크론에서:
+      GET /cron/send-reco?time=아침
+      GET /cron/send-reco?time=점심
+    이런 식으로 호출.
+
+    - users.alert_times 에 해당 time 문자열(아침/점심/저녁/야식)이 포함된
+      활성 사용자에게 맛집 추천 알림톡 발송
+    """
+    time_label = (request.args.get("time") or "").strip()
+    if not time_label:
+        return jsonify({
+            "result": "error",
+            "message": "time 쿼리 파라미터 필요 (예: 아침,점심,저녁,야식)"
+        }), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT phone_number
+            FROM users
+            WHERE is_active = TRUE
+              AND (
+                  alert_times ILIKE %s
+                  OR alert_times = ''
+                  OR alert_times IS NULL
+              )
+            """,
+            (f"%{time_label}%",),
+        )
+        phones = [row[0] for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+    sent = []
+    failed = []
+
+    for p in phones:
+        ok, res = send_reco_message(p, time_label)
+        if ok:
+            sent.append(p)
+        else:
+            failed.append({"phone": p, "res": res})
+
+    return jsonify({
+        "result": "ok",
+        "time": time_label,
+        "sent_count": len(sent),
+        "failed_count": len(failed),
+        "failed": failed,
+    })
+
+@app.route("/cron/send-feedback", methods=["GET"])
+def cron_send_feedback():
+    """
+    외부 크론에서:
+      GET /cron/send-feedback?time=점심
+    이런 식으로 호출.
+
+    - recommendation_logs 에 오늘 날짜 + 해당 time(아침/점심...)으로
+      추천이 나갔던 사용자들만 골라서 피드백 알림톡 발송
+    - 실제 "언제" 보낼지는 크론 스케줄(예: 추천 후 2시간 뒤)에 맞추면 됨
+    """
+    time_label = (request.args.get("time") or "").strip()
+    if not time_label:
+        return jsonify({
+            "result": "error",
+            "message": "time 쿼리 파라미터 필요 (예: 아침,점심,저녁,야식)"
+        }), 400
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT DISTINCT phone_number
+            FROM recommendation_logs
+            WHERE time_of_day = %s
+              AND created_at::date = CURRENT_DATE
+            """,
+            (time_label,),
+        )
+        phones = [row[0] for row in cur.fetchall()]
+    finally:
+        cur.close()
+        conn.close()
+
+    sent = []
+    failed = []
+
+    for p in phones:
+        ok, res = send_feedback_message(p, time_label)
+        if ok:
+            sent.append(p)
+        else:
+            failed.append({"phone": p, "res": res})
+
+    return jsonify({
+        "result": "ok",
+        "time": time_label,
+        "sent_count": len(sent),
+        "failed_count": len(failed),
+        "failed": failed,
+    })
+
 
 # =========================
 # 위치 기반 추천 API (Google Places + Kakao)
