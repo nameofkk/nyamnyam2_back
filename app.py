@@ -608,9 +608,17 @@ def get_aligo_token():
     return js.get("token")
 
 
-def send_alimtalk(template_code, receiver, subject, message,
-                  btn_mobile_url=None, btn_pc_url=None, btn_name="자세히 보기",
-                  button_json=None):
+def send_alimtalk(
+    template_code,
+    receiver,
+    subject,
+    message,
+    btn_mobile_url=None,
+    btn_pc_url=None,
+    btn_name="자세히 보기",
+    button_json=None,
+    emtitle=None,   # ✅ 강조표기 템플릿용
+):
     """알리고 알림톡 공통 발송 함수"""
     token = get_aligo_token()
     if not token:
@@ -630,23 +638,27 @@ def send_alimtalk(template_code, receiver, subject, message,
         "tpl_code": template_code,
         "sender": ALIGO_SENDER,
         "receiver_1": receiver,
-        "subject_1": subject,
-        "message_1": message,
+        "subject_1": subject,   # 부제(자유롭게 써도 됨)
+        "message_1": message,   # 템플릿 본문과 100% 일치해야 함
         "failover": "N",
     }
+
+    # ✅ 강조표기 타이틀(템플릿에서 emtitle_1 로 지정된 부분)
+    if emtitle:
+        payload["emtitle_1"] = emtitle
 
     # 테스트 모드
     if ALIGO_TESTMODE.upper() == "Y":
         payload["testMode"] = "Y"
 
-    # 1순위: button_json 이 직접 넘어온 경우 (AC 등 커스텀 버튼 그대로 사용)
+    # 1) 버튼 JSON 직접 지정 (AC 채널추가 등)
     if button_json is not None:
         payload["button_1"] = json.dumps(button_json, ensure_ascii=False)
 
-    # 2순위: 별도 button_json 없고, 웹링크 버튼을 쓰는 경우 (reco/feedback용)
+    # 2) 버튼 JSON 없고, 웹링크 버튼 쓰는 경우 (reco/feedback)
     elif btn_mobile_url or btn_pc_url:
         mobile = btn_mobile_url or btn_pc_url
-        pc = btn_pc_url or btn_mobile_url or btn_mobile_url
+        pc = btn_pc_url or btn_mobile_url
         button_obj = {
             "button": [
                 {
@@ -670,46 +682,50 @@ def send_alimtalk(template_code, receiver, subject, message,
     app.logger.info("[ALIGO] 발송 결과: %s", js)
     return js.get("code") == 0, js
 
-
-
 # ================== 알림톡 3종 래퍼 =========================
 
 def send_welcome_message(phone: str):
-    """1) 웰컴 알림톡 (템플릿코드 UD_8456)"""
+    """웰컴 알림톡 – 강조표기(emtitle_1)가 제목 역할"""
     if not phone:
         return False, {"msg": "NO_PHONE"}
 
-    # ⚠ 여기 subject / message 는 알리고에 승인된 템플릿의
-    # 제목/본문과 개행·띄어쓰기까지 100% 동일해야 합니다.
-    subject = "#{emtitle_1}냠냠, 환영해요!"
+    # subject_1 은 '부제'라 템플릿과 일치하지 않아도 됨.
+    # 템플릿엔 없어도 됨. 안 쓰고 싶으면 "" 처리해도 OK.
+    subject = ""
 
+    # ✔ 템플릿의 강조표기 타이틀 (실제 제목)
+    emtitle = "냠냠, 환영해요!"
+
+    # ✔ 템플릿 본문 100% 동일하게
     message = (
         "냠냠이 서비스를 신청 해주셔서 감사 드립니다(축하)\n"
         "\n"
         "앞으로 고객님께서 신청하신 취향/시간대 별로 주변 맛집을 골라서 추천 드릴 예정입니다!\n"
         "\n"
-        "우리 같이 맛있는 생활 해봐요. 냠냠(밥)"
+        "우리 같이 맛있는 생활 해봐요. 냠냠(밥)\n"
     )
 
-    # ✅ 채널추가(AC) 버튼 JSON
-    # - 버튼명, linkType, linkTypeName 이 템플릿에 등록된 값과 1자도 다르면 안 됨
+    # ✔ 채널추가(AC) 버튼 (버튼명 1글자도 틀리면 불일치)
     channel_add_button = {
         "button": [
             {
-                "name": "채널 추가",      # 템플릿 버튼명과 동일해야 함
+                "name": "채널추가",          # 붙여쓰기 매우 중요
                 "linkType": "AC",
                 "linkTypeName": "채널 추가"
             }
         ]
     }
 
+    # send_alimtalk 내부는 emtitle_1 지원하도록 이미 구성돼 있어야 함
     return send_alimtalk(
-        "UD_8456",
+        "UD_8456",        # 템플릿코드
         phone,
-        subject,
-        message,
-        button_json=channel_add_button,   # ← 여기서 채널추가 버튼 직접 전달
+        subject,          # 부제 (템플릿 일치 검사 없음)
+        message,          # 본문
+        button_json=channel_add_button,
+        emtitle=emtitle   # ← 강조표기 타이틀 전달
     )
+
 
 def send_reco_message(phone: str, time_label: str):
     """2) 맛집 추천 알림톡 (템플릿코드 UD_8444)"""
