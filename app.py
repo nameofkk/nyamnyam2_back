@@ -1874,6 +1874,64 @@ def api_save_user():
 
     return jsonify({"result": "ok"})
 
+@app.route("/register", methods=["POST"])
+def register():
+    """
+    /signup 페이지에서 '신청하기' 버튼 눌렀을 때 호출되는 엔드포인트.
+    프론트에서 보내는 JSON 형식:
+
+    {
+      "phone_number": "01012341234",
+      "latitude": 37.5,
+      "longitude": 126.9,
+      "preferences_categories": ["한식", "일식"],
+      "preferences_focus": "맛",
+      "alert_times": ["아침", "점심"]
+    }
+    """
+    data = request.get_json() or {}
+
+    # 프론트에서 오는 필드명 그대로 받기
+    phone = data.get("phone_number") or data.get("phone")
+    categories = data.get("preferences_categories") or data.get("categories")
+    # 거리/가격은 아직 화면에서 안 받는다면 기본값으로 넣어둠
+    preferred_distance_km = data.get("distance_km") or 1500
+    preferred_price_range = data.get("price_range")
+
+    if not phone:
+        return jsonify({"success": False, "message": "전화번호는 필수입니다."}), 400
+
+    # 카테고리 리스트 → 문자열로 합치기
+    if isinstance(categories, list):
+        categories_str = ",".join(categories)
+    else:
+        categories_str = categories or ""
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # 기존 /api/save-user 와 동일한 upsert 로직
+    cur.execute(
+        """
+        INSERT INTO users (phone_number, preferred_distance_km, preferred_price_range, preferences_categories)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (phone_number)
+        DO UPDATE SET
+            preferred_distance_km = EXCLUDED.preferred_distance_km,
+            preferred_price_range = EXCLUDED.preferred_price_range,
+            preferences_categories = EXCLUDED.preferences_categories;
+        """,
+        (phone, preferred_distance_km, preferred_price_range, categories_str),
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # 프론트에서 기대하는 형식에 맞춰 응답
+    return jsonify({"success": True})
+
+
 
 # =========================
 # API: 유저 피드백 저장
