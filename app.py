@@ -609,7 +609,8 @@ def get_aligo_token():
 
 
 def send_alimtalk(template_code, receiver, subject, message,
-                  btn_mobile_url=None, btn_pc_url=None, btn_name="자세히 보기"):
+                  btn_mobile_url=None, btn_pc_url=None, btn_name="자세히 보기",
+                  button_json=None):
     """알리고 알림톡 공통 발송 함수"""
     token = get_aligo_token()
     if not token:
@@ -638,8 +639,12 @@ def send_alimtalk(template_code, receiver, subject, message,
     if ALIGO_TESTMODE.upper() == "Y":
         payload["testMode"] = "Y"
 
-    # 버튼(웹 링크) 세팅
-    if btn_mobile_url or btn_pc_url:
+    # 1순위: button_json 이 직접 넘어온 경우 (AC 등 커스텀 버튼 그대로 사용)
+    if button_json is not None:
+        payload["button_1"] = json.dumps(button_json, ensure_ascii=False)
+
+    # 2순위: 별도 button_json 없고, 웹링크 버튼을 쓰는 경우 (reco/feedback용)
+    elif btn_mobile_url or btn_pc_url:
         mobile = btn_mobile_url or btn_pc_url
         pc = btn_pc_url or btn_mobile_url or btn_mobile_url
         button_obj = {
@@ -666,6 +671,7 @@ def send_alimtalk(template_code, receiver, subject, message,
     return js.get("code") == 0, js
 
 
+
 # ================== 알림톡 3종 래퍼 =========================
 
 def send_welcome_message(phone: str):
@@ -673,12 +679,10 @@ def send_welcome_message(phone: str):
     if not phone:
         return False, {"msg": "NO_PHONE"}
 
-    # 템플릿에 등록한 제목과 최대한 동일하게
-    # (subject_1는 템플릿 검사 대상이 아니지만, 보기 좋게 맞춰줌)
+    # ⚠ 여기 subject / message 는 알리고에 승인된 템플릿의
+    # 제목/본문과 개행·띄어쓰기까지 100% 동일해야 합니다.
     subject = "#{emtitle_1}냠냠, 환영해요!"
 
-    # ⚠ message_1 은 템플릿 본문과 동일해야 함
-    #   버튼 JSON은 여기 넣지 않고 send_alimtalk에서 button_1로 전송
     message = (
         "냠냠이 서비스를 신청 해주셔서 감사 드립니다(축하).\n"
         "\n"
@@ -687,11 +691,25 @@ def send_welcome_message(phone: str):
         "우리 같이 맛있는 생활 해봐요. 냠냠(밥)"
     )
 
-    # 웰컴 템플릿은 버튼이 '채널 추가(AC)' 고정이라면
-    # 여기서 btn_* 를 안 보내도 되고, 보내도 링크만 무시될 수 있음.
-    # (템플릿 버튼이 고정 AC라면 그냥 버튼 없이 보내도 템플릿 버튼이 노출됨)
-    return send_alimtalk("UD_8456", phone, subject, message)
+    # ✅ 채널추가(AC) 버튼 JSON
+    # - 버튼명, linkType, linkTypeName 이 템플릿에 등록된 값과 1자도 다르면 안 됨
+    channel_add_button = {
+        "button": [
+            {
+                "name": "채널 추가",      # 템플릿 버튼명과 동일해야 함
+                "linkType": "AC",
+                "linkTypeName": "채널 추가"
+            }
+        ]
+    }
 
+    return send_alimtalk(
+        "UD_8456",
+        phone,
+        subject,
+        message,
+        button_json=channel_add_button,   # ← 여기서 채널추가 버튼 직접 전달
+    )
 
 def send_reco_message(phone: str, time_label: str):
     """2) 맛집 추천 알림톡 (템플릿코드 UD_8444)"""
