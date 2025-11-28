@@ -2368,6 +2368,32 @@ def cron_send_feedback():
         "failed": failed,
     })
 
+@app.route("/test/alimtalk", methods=["GET"])
+def test_alimtalk():
+    """
+    간단한 테스트용 알림톡 발송 엔드포인트.
+    예:
+      /test/alimtalk?type=welcome&phone=01095883044
+      /test/alimtalk?type=reco&phone=01095883044&time=점심
+      /test/alimtalk?type=feedback&phone=01095883044&time=점심
+    """
+    phone = (request.args.get("phone") or "").strip()
+    msg_type = (request.args.get("type") or "welcome").strip()
+    time_label = (request.args.get("time") or "점심").strip()
+
+    if not phone:
+        return jsonify({"result": "error", "message": "phone 쿼리 필요"}), 400
+
+    if msg_type == "welcome":
+        ok, res = send_welcome_message(phone)
+    elif msg_type == "reco":
+        ok, res = send_reco_message(phone, time_label)
+    elif msg_type == "feedback":
+        ok, res = send_feedback_message(phone, time_label)
+    else:
+        return jsonify({"result": "error", "message": "type=welcome|reco|feedback 중 하나"}), 400
+
+    return jsonify({"ok": ok, "aligo_response": res})
 
 # =========================
 # 위치 기반 추천 API (Google Places + Kakao)
