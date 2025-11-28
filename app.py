@@ -1879,7 +1879,7 @@ def register():
     """
     /signup 페이지에서 '신청하기' 버튼 눌렀을 때 호출되는 엔드포인트.
 
-    프론트에서 보내는 JSON 형식:
+    프론트에서 보내는 JSON 예시:
     {
       "phone_number": "01012341234",
       "latitude": 37.5,
@@ -1903,7 +1903,7 @@ def register():
         lat = float(lat) if lat is not None else None
         lon = float(lon) if lon is not None else None
     except (TypeError, ValueError):
-        # 위치가 이상하게 들어오면 그냥 NULL로 저장
+        # 위치 값이 이상하면 그냥 NULL로 저장
         lat, lon = None, None
 
     # 선호 카테고리
@@ -1920,32 +1920,64 @@ def register():
     else:
         alert_times_str = str(alert_times) if alert_times else ""
 
-    conn = get_conn()
-    cur = conn.cursor()
+    conn = None
+    cur = None
 
-    # 2) 실제 DB에 있는 컬럼 기준으로 upsert
-    #    (latitude, longitude, alert_times, preferences_categories, is_active)
-    cur.execute(
-        """
-        INSERT INTO users (phone_number, latitude, longitude, alert_times, preferences_categories, is_active)
-        VALUES (%s, %s, %s, %s, %s, TRUE)
-        ON CONFLICT (phone_number)
-        DO UPDATE SET
-            latitude = EXCLUDED.latitude,
-            longitude = EXCLUDED.longitude,
-            alert_times = EXCLUDED.alert_times,
-            preferences_categories = EXCLUDED.preferences_categories,
-            is_active = TRUE;
-        """,
-        (phone, lat, lon, alert_times_str, categories_str),
-    )
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        # 2) INSERT 전에 기존 가입 여부 확인
+        cur.execute(
+            "SELECT 1 FROM users WHERE phone_number = %s",
+            (phone,),
+        )
+        already_exists = cur.fetchone() is not None
 
+        # 3) 실제 DB에 있는 컬럼 기준으로 upsert
+        #    (phone_number, latitude, longitude, alert_times,
+        #     preferences_categories, is_active)
+        cur.execute(
+            """
+            INSERT INTO users (phone_number, latitude, longitude, alert_times, preferences_categories, is_active)
+            VALUES (%s, %s, %s, %s, %s, TRUE)
+            ON CONFLICT (phone_number)
+            DO UPDATE SET
+                latitude = EXCLUDED.latitude,
+                longitude = EXCLUDED.longitude,
+                alert_times = EXCLUDED.alert_times,
+                preferences_categories = EXCLUDED.preferences_categories,
+                is_active = TRUE;
+            """,
+            (phone, lat, lon, alert_times_str, categories_str),
+        )
+
+        conn.commit()
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print("[REGISTER_ERROR]", e)
+        return jsonify({"success": False, "message": "서버 오류가 발생했습니다."}), 500
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
+    # 4) 완전 신규일 때만 웰컴 알림톡 발송
+    if not already_exists:
+        try:
+            ok, res = send_welcome_message(phone)
+            if not ok:
+                print("[WELCOME_ERROR]", res)
+        except Exception as e:
+            # 웰컴 실패해도 회원가입 자체는 성공으로 처리
+            print("[WELCOME_EXCEPTION]", e)
+
+    # 프론트에서 data.success를 보고 있으므로 이 형식 유지
     return jsonify({"success": True})
-
 
 
 # =========================
