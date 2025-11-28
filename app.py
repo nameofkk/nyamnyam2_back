@@ -698,7 +698,7 @@ def send_welcome_message(phone: str):
 
     # ✔ 템플릿 본문 100% 동일하게
     message = (
-        "냠냠이 서비스를 신청 해주셔서 감사 드립니다(축하)\n"
+        "냠냠이 서비스를 신청 해주셔서 감사 드립니다(축하).\n"
         "\n"
         "앞으로 고객님께서 신청하신 취향/시간대 별로 주변 맛집을 골라서 추천 드릴 예정입니다!\n"
         "\n"
@@ -768,19 +768,22 @@ def send_feedback_message(phone: str, time_label: str):
     base_url = BASE_SERVER_URL.rstrip("/") if BASE_SERVER_URL else ""
     link = f"{base_url}/feedback-form?phone={phone}&time={time_label}"
 
-    # 템플릿에 등록한 제목과 일치
-    subject = "#{emtitle_1}오늘 방문하신 맛집은 어떠셨나요?"
+    # subject_1 = 부제(템플릿 일치 검사 안 함) → 편한 문구나 빈 문자열 가능
+    subject = ""
 
-    # 템플릿 본문과 동일 (문구 주의)
+    # ✅ 템플릿의 '강조표기 타이틀(emtitle_1)' 과 1글자도 동일하게
+    #    (알리고 템플릿 설정 화면에서 강조표기 문구 그대로 복사해서 넣어줘야 함)
+    emtitle = "오늘 방문하신 맛집은 어떠셨나요?"
+
+    # ✅ 템플릿 본문과 완전히 동일하게 (띄어쓰기/마침표/줄바꿈까지)
+    # 아래 문장은 예시라서, 실제 템플릿에 등록한 본문이랑 다르면
+    # 텍스트를 그대로 복붙해서 교체해줘야 함.
     message = (
         "피드백과 리뷰를 남겨 주시면 다음 추천때 냠냠이가 고객님의 취향에 알맞는 음식점을 잘 찾아드려요!"
     )
 
-    # 템플릿 버튼:
-    # name: "피드백 남기러가기!"
-    # linkType: "WL"
-    # linkPc / linkMo: https://nyamnyam2-back.onrender.com/feedback-form?phone=#{phone}&time=#{time}
-    # → 여기서는 #{phone}, #{time} 자리에 실제 값이 들어간 동일 형식의 URL을 보냄
+    # 버튼은 템플릿에서 WL + "피드백 남기러가기!" 로 등록되어 있음.
+    # send_alimtalk 안에서 btn_* 인자를 받아 WL 버튼 JSON으로 변환해서 보냄.
     return send_alimtalk(
         "UD_8446",
         phone,
@@ -789,7 +792,9 @@ def send_feedback_message(phone: str, time_label: str):
         btn_mobile_url=link,
         btn_pc_url=link,
         btn_name="피드백 남기러가기!",
+        emtitle=emtitle,  # ✅ 강조표기 파라미터로 보냄
     )
+
 
 
 # =========================
