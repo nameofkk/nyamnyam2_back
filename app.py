@@ -699,22 +699,19 @@ def send_reco_message(phone: str, time_label: str):
     base_url = BASE_SERVER_URL.rstrip("/") if BASE_SERVER_URL else ""
     link = f"{base_url}/reco?phone={phone}&time={time_label}"
 
-    # 템플릿 제목과 동일하게
+    # 템플릿 제목과 동일하게 맞춰 둔 subject
     subject = "오늘의 추천 맛집이 도착했어요"
 
-    # 템플릿 본문과 동일 (#{time}, #{phone_number} 는 템플릿 변수로 그대로 둠)
+    # ⚠ 여기서 더 이상 #{time}, #{phone_number}를 넣지 않고
+    #    실제 값(time_label, phone)으로 치환해서 보냄
     message = (
-        "냠냠, 오늘의 추천 #{time} 맛집이 도착했어요!\n"
+        f"냠냠, 오늘의 추천 {time_label} 맛집이 도착했어요!\n"
         "오늘은 어떤 음식을 먹어 볼까요?\n"
-        "알림 받는 연락처: #{phone_number}"
+        f"알림 받는 연락처: {phone}\n"
+        "해당 메세지는 고객님께서 신청하신 주변 맛집 추천 알림으로, "
+        "고객님이 요청하신 시간대에 발송됩니다."
     )
 
-    # 버튼 정보는 send_alimtalk에서 button_1 JSON으로 전달
-    # 템플릿에 등록된 버튼:
-    # name: "과연 오늘의 밥은?"
-    # linkType: "WL"
-    # linkPc / linkMo: https://nyamnyam2-back.onrender.com/reco?phone=#{phone}&time=#{time}
-    # → 여기서는 #{phone}, #{time} 자리에 실제 값이 들어간 동일 형식의 URL을 보냄
     return send_alimtalk(
         "UD_8444",
         phone,
