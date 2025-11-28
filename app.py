@@ -2752,6 +2752,10 @@ def go_kakao_map():
     # 3) 모두 없으면 카카오맵 홈
     return redirect("https://map.kakao.com/")
 
+@app.route("/my-ip")
+def my_ip():
+    return requests.get("https://api.ipify.org").text
+
 
 
 if __name__ == "__main__":
