@@ -698,11 +698,11 @@ def send_welcome_message(phone: str):
 
     # ✔ 템플릿 본문 100% 동일하게
     message = (
-        "냠냠이 서비스를 신청 해주셔서 감사 드립니다(축하).\n"
+        "냠냠이 서비스를 신청 해주셔서 감사 드립니다(축하)\n"
         "\n"
         "앞으로 고객님께서 신청하신 취향/시간대 별로 주변 맛집을 골라서 추천 드릴 예정입니다!\n"
         "\n"
-        "우리 같이 맛있는 생활 해봐요. 냠냠(밥)\n"
+        "우리 같이 맛있는 생활 해봐요. 냠냠(밥)"
     )
 
     # ✔ 채널추가(AC) 버튼 (버튼명 1글자도 틀리면 불일치)
@@ -2464,11 +2464,10 @@ def cron_send_feedback():
     """
     외부 크론에서:
       GET /cron/send-feedback?time=점심
-    이런 식으로 호출.
 
-    - recommendation_logs 에 오늘 날짜 + 해당 time(아침/점심...)으로
-      추천이 나갔던 사용자들만 골라서 피드백 알림톡 발송
-    - 실제 "언제" 보낼지는 크론 스케줄(예: 추천 후 2시간 뒤)에 맞추면 됨
+    - recommendation_logs 에 오늘 날짜 + 해당 time 으로 추천이 나갔고
+    - 그 중 한 가게 이상에 대해 user_feedback 에서 '좋아요(5점)'가 찍힌 사용자만
+      피드백 알림톡 발송
     """
     time_label = (request.args.get("time") or "").strip()
     if not time_label:
@@ -2480,12 +2479,19 @@ def cron_send_feedback():
     conn = get_conn()
     cur = conn.cursor()
     try:
+        # ✅ 오늘 해당 시간대에 추천 나갔고,
+        #    그 추천 목록 중 하나 이상에 '좋아요(5점)'가 있는 사용자만 추출
         cur.execute(
             """
-            SELECT DISTINCT phone_number
-            FROM recommendation_logs
-            WHERE time_of_day = %s
-              AND created_at::date = CURRENT_DATE
+            SELECT DISTINCT rl.phone_number
+            FROM recommendation_logs rl
+            JOIN user_feedback uf
+              ON uf.phone_number = rl.phone_number
+             AND uf.restaurant_name = rl.restaurant_name
+            WHERE rl.time_of_day = %s
+              AND rl.created_at::date = CURRENT_DATE
+              AND uf.rating >= 5         -- 좋아요(5점)만
+              AND uf.created_at::date = CURRENT_DATE
             """,
             (time_label,),
         )
@@ -2511,6 +2517,7 @@ def cron_send_feedback():
         "failed_count": len(failed),
         "failed": failed,
     })
+
 
 @app.route("/test/alimtalk", methods=["GET"])
 def test_alimtalk():
