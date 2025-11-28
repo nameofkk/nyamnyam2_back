@@ -710,6 +710,8 @@ def send_reco_message(phone: str, time_label: str):
         f"냠냠, 오늘의 추천 {time_label} 맛집이 도착했어요!\n"
         "\n"
         "오늘은 어떤 음식을 먹어 볼까요?\n"
+        "\n"
+
         f"알림 받는 연락처: {phone}\n"
     )
 
