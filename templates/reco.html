@@ -266,32 +266,10 @@
       flex: 1;
     }
 
-    .card-title-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 2px;
-    }
-
     .card-title {
-      font-size: 16px;
+      font-size: 18px;
       font-weight: 700;
-      margin-bottom: 0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .rating-pill {
-      flex-shrink: 0;
-      padding: 3px 8px;
-      border-radius: 999px;
-      background: #fff7e0;
-      border: 1px solid #ffd28a;
-      font-size: 11px;
-      font-weight: 600;
-      color: #b46900;
+      margin-bottom: 4px;
     }
 
     .badge-row {
@@ -314,13 +292,13 @@
       color: #b26a00;
     }
 
-    .menu {
-      font-size: 13px;
-      color: #444;
-      margin-bottom: 4px;
-      font-weight: 600;
-    }
-
+.menu {
+  font-size: 13px;
+  color: #444;
+  font-weight: 600;
+  margin-top: 4px;
+  margin-bottom: 10px;   /* ✅ 대표메뉴와 파란 글씨 사이 여백 */
+}
     .summary {
       font-size: 12px;
       color: #555;
@@ -328,19 +306,22 @@
       line-height: 1.45;
     }
 
-    .reason {
-      margin-bottom: 6px;
-      font-size: 12px;
-      color: #2563eb;
-      line-height: 1.4;
-    }
+.reason {
+  font-size: 12px;
+  color: #2563eb;
+  line-height: 1.4;
+  margin-top: 4px;
+  margin-bottom: 10px;   /* ✅ 파란 글씨와 태그 사이 여백 */
+  text-align: center;    /* ✅ 중앙 정렬 */
+}
 
-    .keyword-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-      margin-bottom: 8px;
-    }
+.keyword-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+  justify-content: center; /* ✅ 태그 중앙 정렬 */
+}
 
     .tag {
       font-size: 11px;
@@ -350,12 +331,13 @@
       color: #c0572c;
     }
 
-    .kakao-preview {
-      font-size: 11px;
-      color: #777;
-      line-height: 1.4;
-    }
-
+.kakao-preview {
+  font-size: 11px;
+  color: #777;
+  line-height: 1.4;
+  margin-top: 4px;
+  text-align: center;      /* ✅ 영업시간까지 중앙 정렬 */
+}
     .bottom-actions {
       margin-top: auto;
       padding-top: 10px;
@@ -688,14 +670,13 @@
           </div>
 
           <div class="card-body">
-            <div class="card-title-row">
-              <div class="card-title">${item.name || ""}</div>
-              ${ratingText !== "-" ? `<div class="rating-pill">★ ${ratingText}</div>` : ""}
-            </div>
+            <div class="card-title">${item.name || ""}</div>
             <div class="badge-row">
               <span class="badge">${item.category || "기타"}</span>
+              ${ratingText !== "-" ? `<span class="badge rating">★ ${ratingText}</span>` : ""}
             </div>
-            <div class="menu">대표 메뉴 · ${item.menu || "정보 없음"}</div>
+            <div class="menu">대표 메뉴: ${item.menu || "정보 없음"}</div>
+            <div class="summary">${item.summary || ""}</div>
             ${item.reason ? `<div class="reason">${item.reason}</div>` : ""}
             <div class="keyword-row">
               ${keywords}
