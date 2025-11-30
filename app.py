@@ -140,6 +140,24 @@ def init_db():
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
+    # ★ 기존 DB에 lat 컬럼이 없을 수 있으니 추가
+    try:
+        cur.execute("""
+            ALTER TABLE restaurants
+            ADD COLUMN lat DOUBLE PRECISION;
+        """)
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback()
+
+    # ★ 기존 DB에 lon 컬럼이 없을 수 있으니 추가
+    try:
+        cur.execute("""
+            ALTER TABLE restaurants
+            ADD COLUMN lon DOUBLE PRECISION;
+        """)
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback()
+
     # (선택) num_reviews가 예전 DB에는 없을 수도 있어서 안전하게 추가
     try:
         cur.execute("""
@@ -176,6 +194,7 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
+
 
 
 
