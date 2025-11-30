@@ -28,7 +28,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "ETGklkjHIMpvYm7SR8jfDgISfhkpaF7Y")
 DB_NAME = os.getenv("DB_NAME", "nyamnyam")
 
 KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "f2f3a9c2b5d912ae8a0c5ff0548b0aa6")
-GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "AIzaSyAox_CWmpe4klOp48vfgRk9JX8vTAQ_guard")
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "changeme")
 
 
