@@ -131,6 +131,24 @@ def init_db():
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
+    # ★ 기존 DB에 address 컬럼이 없을 수 있으니 추가
+    try:
+        cur.execute("""
+            ALTER TABLE restaurants
+            ADD COLUMN address VARCHAR(255);
+        """)
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback()
+
+    # (선택) num_reviews가 예전 DB에는 없을 수도 있어서 안전하게 추가
+    try:
+        cur.execute("""
+            ALTER TABLE restaurants
+            ADD COLUMN num_reviews INTEGER DEFAULT 0;
+        """)
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback()
+
     # ★ restaurants (name, address) 유니크 인덱스 – upsert용
     cur.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_name_address
@@ -158,6 +176,7 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
+
 
 
 
