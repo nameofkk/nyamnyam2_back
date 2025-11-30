@@ -115,6 +115,17 @@ CREATE TABLE IF NOT EXISTS recommendation_logs (
 );
 """
 
+CREATE_CLICK_LOGS_TABLE = """
+CREATE TABLE IF NOT EXISTS click_logs (
+    id SERIAL PRIMARY KEY,
+    phone_number VARCHAR(20) NOT NULL,
+    restaurant_id INTEGER REFERENCES restaurants(id),
+    restaurant_name VARCHAR(255),
+    time_of_day VARCHAR(10),
+    clicked_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
 
 def init_db():
     conn = get_conn()
@@ -124,6 +135,7 @@ def init_db():
     cur.execute(CREATE_USERS_TABLE)
     cur.execute(CREATE_USER_FEEDBACK_TABLE)
     cur.execute(CREATE_RECOMMENDATION_LOGS_TABLE)
+    cur.execute(CREATE_CLICK_LOGS_TABLE)
     cur.execute(CREATE_REVIEWS_TABLE)
 
     # 1) restaurants 테이블은 조건 따지지 말고 항상 새로 만든다
@@ -147,6 +159,12 @@ def init_db():
     # 3-2) comment 컬럼 (피드백 폼에서 쓰는 한 줄 후기)
     try:
         cur.execute("ALTER TABLE user_feedback ADD COLUMN comment TEXT;")
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback()
+
+    # 3-3) time_of_day 컬럼 (빠른 피드백 시간대 저장용)
+    try:
+        cur.execute("ALTER TABLE user_feedback ADD COLUMN time_of_day VARCHAR(10);")
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
@@ -859,6 +877,40 @@ def get_user_prefs(phone, cur):
         return {}
 
     rows = cur.fetchall()
+    prefs = {}
+    for c, r in rows:
+        if c:
+            prefs[c] = float(r)
+    return prefs
+
+
+def get_user_prefs_by_time(phone, time_of_day, cur):
+    """
+    특정 시간대(time_of_day)에 대한 카테고리별 평균 rating.
+    데이터가 없으면 전체(get_user_prefs) 기준으로 fallback.
+    """
+    if not time_of_day:
+        return get_user_prefs(phone, cur)
+
+    try:
+        cur.execute(
+            """
+            SELECT category, AVG(rating)
+            FROM user_feedback
+            WHERE phone_number = %s
+              AND time_of_day = %s
+            GROUP BY category;
+            """,
+            (phone, time_of_day),
+        )
+    except UndefinedColumn:
+        # time_of_day 컬럼이 없으면 기존 전체 선호도로 대체
+        return get_user_prefs(phone, cur)
+
+    rows = cur.fetchall()
+    if not rows:
+        return get_user_prefs(phone, cur)
+
     prefs = {}
     for c, r in rows:
         if c:
@@ -2240,6 +2292,8 @@ def api_quick_feedback():
     phone = data.get("phone")
     name = data.get("restaurant_name") or data.get("name")
     category = data.get("category") or ""
+    time_of_day = data.get("time_of_day") or data.get("time")
+    restaurant_id = data.get("restaurant_id")
 
     # like / is_good 둘 다 지원
     like_flag = data.get("like")
@@ -2260,10 +2314,18 @@ def api_quick_feedback():
         # user_feedback 테이블에 저장
         cur.execute(
             """
-            INSERT INTO user_feedback (phone_number, restaurant_name, category, rating)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO user_feedback (phone_number, restaurant_name, category, rating, source, time_of_day, restaurant_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (phone, name, category, rating),
+            (
+                phone,
+                name,
+                category,
+                rating,
+                'quick',
+                time_of_day,
+                restaurant_id,
+            ),
         )
         conn.commit()
     except Exception as e:
@@ -2348,6 +2410,7 @@ def feedback_form():
               <input type="hidden" name="phone_number" value="{phone}">
               <input type="hidden" name="restaurant_name" value="{name}">
               <input type="hidden" name="category" value="{cat_text}">
+              <input type="hidden" name="time_of_day" value="{time_of_day}">
 
               <div class="store-header">
                 <div class="store-name">{name}</div>
@@ -2523,6 +2586,9 @@ def submit_feedback():
         category = request.form.get("category") or None
         rating_raw = request.form.get("rating")
         comment = request.form.get("comment") or ""
+        time_of_day = request.form.get("time_of_day") or None
+        # 상세 리뷰 폼에서는 restaurant_id를 별도로 넘기지 않으므로 None
+        restaurant_id = request.form.get("restaurant_id") or None
 
         if not phone or not restaurant or not rating_raw:
             return (
@@ -2546,10 +2612,19 @@ def submit_feedback():
             cur.execute(
                 """
                 INSERT INTO user_feedback
-                (phone_number, restaurant_name, category, rating, comment)
-                VALUES (%s, %s, %s, %s, %s);
+                (phone_number, restaurant_name, category, rating, comment, source, time_of_day, restaurant_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
                 """,
-                (phone, restaurant, category, rating, comment),
+                (
+                    phone,
+                    restaurant,
+                    category,
+                    rating,
+                    comment,
+                    'form',
+                    time_of_day,
+                    restaurant_id,
+                ),
             )
         except UndefinedColumn:
             # comment 컬럼이 없을 경우 컬럼 추가 후 다시 시도
@@ -2566,10 +2641,19 @@ def submit_feedback():
             cur.execute(
                 """
                 INSERT INTO user_feedback
-                (phone_number, restaurant_name, category, rating, comment)
-                VALUES (%s, %s, %s, %s, %s);
+                (phone_number, restaurant_name, category, rating, comment, source, time_of_day, restaurant_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
                 """,
-                (phone, restaurant, category, rating, comment),
+                (
+                    phone,
+                    restaurant,
+                    category,
+                    rating,
+                    comment,
+                    'form',
+                    time_of_day,
+                    restaurant_id,
+                ),
             )
 
         conn.commit()
@@ -2838,9 +2922,9 @@ def api_reco():
                 print("[API_RECO_USER_PREF_CATS_ERR]", e)
                 conn.rollback()
 
-            # 피드백 기반 카테고리별 평균 점수
+            # 피드백 기반 (시간대별) 카테고리별 평균 점수
             try:
-                category_prefs = get_user_prefs(phone, cur)
+                category_prefs = get_user_prefs_by_time(phone, time_of_day, cur)
             except Exception as e:
                 print("[API_RECO_CATEGORY_PREF_ERR]", e)
                 conn.rollback()
@@ -2896,8 +2980,6 @@ def api_reco():
 
     # 4) 카카오맵에 실제로 등록된 곳만 매칭
     candidates = []
-    seen_kakao_places = set()   # ★ 같은 카카오 place_id 중복 방지
-
     for p in unique_places:
         plat = p.get("lat")
         plon = p.get("lon")
@@ -2905,19 +2987,12 @@ def api_reco():
             continue
 
         raw_name = p.get("name")
-        name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(
-            raw_name, plat, plon
-        )
+        name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(raw_name, plat, plon)
         if not kakao_place_id:
             continue
 
-        # ★ 카카오 place_id 기준 중복 제거
-        if kakao_place_id in seen_kakao_places:
-            continue
-        seen_kakao_places.add(kakao_place_id)
-
         rating = p.get("rating")
-        user_rating_count = p.get("user_rating_count") or 0  # 리뷰 수
+        user_rating_count = p.get("user_rating_count") or 0  # ★ 리뷰 수
 
         # 거리: 소수점 1자리
         raw_distance = p.get("distance_km")
@@ -2966,47 +3041,75 @@ def api_reco():
         else:
             menu = build_menu_text(name, category)
 
-        keywords = build_keywords(
-            category,
-            rating,
-            distance_km,
-            preferred=False,
-            review_text=summary,
-        )
+        # 선호 여부/설명 태그
+        is_preferred = False
+        reasons = []
 
-        # 점수 계산
         base_rating = rating if rating is not None else 3.0
         base_dist = float(distance_km or 0.0)
-        score = base_rating * 10 - base_dist
 
-        # 유저가 선호 카테고리로 골랐으면 가산점
+        # 리뷰 수에 따른 신뢰도 가중치
+        review_count = user_rating_count or 0
+        if review_count >= 50:
+            review_factor = 1.2
+        elif review_count >= 20:
+            review_factor = 1.1
+        elif review_count >= 5:
+            review_factor = 1.0
+        else:
+            review_factor = 0.9
+
+        score = base_rating * 10 * review_factor - base_dist
+
+        # 회원가입 시 선택한 선호 카테고리
         if user_categories and category:
             for uc in user_categories:
                 if uc and uc in category:
                     score += 5
+                    is_preferred = True
+                    reasons.append("회원가입에서 선택한 선호 카테고리와 일치해요.")
                     break
 
-        # 카테고리별 피드백 반영
+        # 시간대별 카테고리 선호도
         if category_prefs and category in category_prefs:
             avg_cat = category_prefs[category]
             if avg_cat >= 4.5:
                 score *= 1.3
+                is_preferred = True
+                reasons.append("이 시간대에 자주 높게 평가한 음식 종류예요.")
             elif avg_cat >= 4.0:
                 score *= 1.15
+                reasons.append("이 시간대에 만족도가 높은 카테고리예요.")
             elif avg_cat >= 3.0:
-                score *= 1.0
+                # 중립
+                pass
             elif avg_cat >= 2.0:
                 score *= 0.7
+                reasons.append("예전에 살짝 아쉬웠던 카테고리지만, 근처라 후보에 포함했어요.")
             else:
                 score *= 0.4
+                reasons.append("평균 만족도가 낮았던 카테고리라 점수를 낮췄어요.")
 
-        # 개별 가게 피드백 반영
+        # 개별 가게 선호도
         if restaurant_prefs and name in restaurant_prefs:
             avg_rest = restaurant_prefs[name]
             if avg_rest >= 4.0:
                 score *= 1.3
+                is_preferred = True
+                reasons.append("이전에 이 가게에 높은 점수를 주신 적이 있어요.")
             elif avg_rest <= 2.5:
                 score *= 0.2
+                reasons.append("예전에 별로라고 평가하신 가게라 점수를 크게 낮췄어요.")
+
+        reason_text = " ".join(dict.fromkeys(reasons)) if reasons else ""
+
+        keywords = build_keywords(
+            category,
+            rating,
+            distance_km,
+            preferred=is_preferred,
+            review_text=summary,
+        )
 
         # ★ 여기서 restaurants 테이블 upsert + id 획득
         restaurant_id = None
@@ -3041,7 +3144,11 @@ def api_reco():
                 "address": address,
                 "open_info": open_info,
                 "score": score,
-                "restaurant_id": restaurant_id,
+                "restaurant_id": restaurant_id,  # ★ pk 저장
+                "reason": reason_text,
+                "is_preferred": is_preferred,
+                "is_ad": False,
+                "is_sponsored": False,
             }
         )
 
@@ -3076,7 +3183,7 @@ def api_reco():
 
     # 7) 점수 기준 상위 50개 중 랜덤 3개
     pool.sort(key=lambda x: x.get("score", 0), reverse=True)
-    top_pool = pool[:50]
+    top_pool = pool[:10]
     random.shuffle(top_pool)
     picked = top_pool[:3]
 
@@ -3111,7 +3218,6 @@ def api_reco():
 
 
 
-
 # =========================
 # 디버그용
 # =========================
@@ -3140,6 +3246,39 @@ def go_kakao_map():
     lat = request.args.get("lat")
     lon = request.args.get("lon")
     name = request.args.get("name", "")
+    phone = request.args.get("phone", "").strip()
+    time_of_day = request.args.get("time", "").strip()
+    restaurant_id = request.args.get("rid")
+
+    # 클릭 로그 저장 (실패하더라도 이동 자체는 계속 진행)
+    if phone and (restaurant_id or name):
+        conn = None
+        cur = None
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO click_logs (phone_number, restaurant_id, restaurant_name, time_of_day)
+                VALUES (%s, %s, %s, %s);
+                """,
+                (
+                    phone,
+                    restaurant_id,
+                    name,
+                    time_of_day or None,
+                ),
+            )
+            conn.commit()
+        except Exception as e:
+            print("[CLICK_LOG_ERROR]", e)
+            if conn:
+                conn.rollback()
+        finally:
+            if cur:
+                cur.close()
+            if conn:
+                conn.close()
 
     # 1) place_id 있을 때 → 카카오맵 공식 장소 상세 URL
     if place_id:
