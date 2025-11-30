@@ -2896,6 +2896,8 @@ def api_reco():
 
     # 4) 카카오맵에 실제로 등록된 곳만 매칭
     candidates = []
+    seen_kakao_places = set()   # ★ 같은 카카오 place_id 중복 방지
+
     for p in unique_places:
         plat = p.get("lat")
         plon = p.get("lon")
@@ -2903,12 +2905,19 @@ def api_reco():
             continue
 
         raw_name = p.get("name")
-        name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(raw_name, plat, plon)
+        name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(
+            raw_name, plat, plon
+        )
         if not kakao_place_id:
             continue
 
+        # ★ 카카오 place_id 기준 중복 제거
+        if kakao_place_id in seen_kakao_places:
+            continue
+        seen_kakao_places.add(kakao_place_id)
+
         rating = p.get("rating")
-        user_rating_count = p.get("user_rating_count") or 0  # ★ 리뷰 수
+        user_rating_count = p.get("user_rating_count") or 0  # 리뷰 수
 
         # 거리: 소수점 1자리
         raw_distance = p.get("distance_km")
@@ -2965,16 +2974,19 @@ def api_reco():
             review_text=summary,
         )
 
+        # 점수 계산
         base_rating = rating if rating is not None else 3.0
         base_dist = float(distance_km or 0.0)
         score = base_rating * 10 - base_dist
 
+        # 유저가 선호 카테고리로 골랐으면 가산점
         if user_categories and category:
             for uc in user_categories:
                 if uc and uc in category:
                     score += 5
                     break
 
+        # 카테고리별 피드백 반영
         if category_prefs and category in category_prefs:
             avg_cat = category_prefs[category]
             if avg_cat >= 4.5:
@@ -2988,6 +3000,7 @@ def api_reco():
             else:
                 score *= 0.4
 
+        # 개별 가게 피드백 반영
         if restaurant_prefs and name in restaurant_prefs:
             avg_rest = restaurant_prefs[name]
             if avg_rest >= 4.0:
@@ -3028,7 +3041,7 @@ def api_reco():
                 "address": address,
                 "open_info": open_info,
                 "score": score,
-                "restaurant_id": restaurant_id,  # ★ pk 저장
+                "restaurant_id": restaurant_id,
             }
         )
 
@@ -3095,6 +3108,7 @@ def api_reco():
         conn.close()
 
     return jsonify(picked)
+
 
 
 
