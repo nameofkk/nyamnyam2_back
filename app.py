@@ -514,7 +514,14 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
 
     try:
         resp = requests.post(url, headers=headers, json=body, timeout=5)
-        resp.raise_for_status()
+        # 여기서 상태코드 먼저 확인
+        if not resp.ok:
+            print(
+                "[GOOGLE_PLACES_ERROR]",
+                "status=", resp.status_code,
+                "body=", resp.text[:500]  # 길면 500자까지만
+            )
+            return []
         data = resp.json()
         raw_places = data.get("places", [])
     except Exception as e:
