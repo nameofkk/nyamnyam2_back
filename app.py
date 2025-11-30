@@ -119,19 +119,47 @@ CREATE TABLE IF NOT EXISTS recommendation_logs (
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
+
+    # 1) 기본 테이블들 생성 (없으면 생성)
     cur.execute(CREATE_USERS_TABLE)
     cur.execute(CREATE_RESTAURANTS_TABLE)
     cur.execute(CREATE_REVIEWS_TABLE)
     cur.execute(CREATE_USER_FEEDBACK_TABLE)
     cur.execute(CREATE_RECOMMENDATION_LOGS_TABLE)
 
-    # user_feedback에 source 컬럼 없을 수 있으니 안전하게 추가
+    # 2) restaurants 테이블이 구버전(컬럼 부족)인지 체크
+    cols = set()
+    try:
+        cur.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'restaurants';
+        """)
+        cols = {r[0] for r in cur.fetchall()}
+    except Exception as e:
+        print("[INIT_DB_CHECK_RESTAURANTS_ERR]", e)
+
+    # lat / lon / address / rating / num_reviews 중 하나라도 없으면
+    # → 구버전으로 간주하고, 테이블 드롭 후 새 스키마로 재생성
+    if cols and (
+        "lat" not in cols
+        or "lon" not in cols
+        or "address" not in cols
+        or "rating" not in cols
+        or "num_reviews" not in cols
+    ):
+        print("[INIT_DB] restaurants 테이블이 구버전입니다. 드롭 후 재생성합니다.")
+        cur.execute("DROP TABLE IF EXISTS restaurants CASCADE;")
+        cur.execute(CREATE_RESTAURANTS_TABLE)
+
+    # 3) user_feedback에 source 컬럼 없을 수 있으니 안전하게 추가
     try:
         cur.execute("ALTER TABLE user_feedback ADD COLUMN source VARCHAR(50);")
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
-    # ★ 기존 DB에 address 컬럼이 없을 수 있으니 추가
+    # 4) (예전 DB가 있을 수도 있으니) restaurants 컬럼들 한 번 더 보강
+    #    새로 만든 테이블이면 DuplicateColumn 나고, 그건 무시
     try:
         cur.execute("""
             ALTER TABLE restaurants
@@ -140,7 +168,6 @@ def init_db():
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
-    # ★ 기존 DB에 lat 컬럼이 없을 수 있으니 추가
     try:
         cur.execute("""
             ALTER TABLE restaurants
@@ -149,7 +176,6 @@ def init_db():
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
-    # ★ 기존 DB에 lon 컬럼이 없을 수 있으니 추가
     try:
         cur.execute("""
             ALTER TABLE restaurants
@@ -158,7 +184,6 @@ def init_db():
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
-    # (선택) num_reviews가 예전 DB에는 없을 수도 있어서 안전하게 추가
     try:
         cur.execute("""
             ALTER TABLE restaurants
@@ -167,13 +192,13 @@ def init_db():
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
-    # ★ restaurants (name, address) 유니크 인덱스 – upsert용
+    # 5) restaurants (name, address) 유니크 인덱스 – upsert용
     cur.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_name_address
         ON restaurants (name, address);
     """)
 
-    # ★ recommendation_logs에 restaurant_id 컬럼 추가 (없으면)
+    # 6) recommendation_logs에 restaurant_id 컬럼 추가 (없으면)
     try:
         cur.execute("""
             ALTER TABLE recommendation_logs
@@ -182,7 +207,7 @@ def init_db():
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
-    # ★ user_feedback에 restaurant_id 컬럼 추가 (없으면)
+    # 7) user_feedback에 restaurant_id 컬럼 추가 (없으면)
     try:
         cur.execute("""
             ALTER TABLE user_feedback
@@ -194,10 +219,6 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
-
-
-
-
 
 # =========================
 # Kakao / Google 관련 상수
