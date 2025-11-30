@@ -1,0 +1,20 @@
+name: Feedback Late (23:00 KST)
+
+on:
+  schedule:
+    - cron: "0 14 * * *"   # 매일 14:00 UTC = 23:00 KST
+  workflow_dispatch:
+
+jobs:
+  call-feedback-late:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call feedback 야식
+        run: |
+          echo "== Feedback 야식 start =="
+          curl -sS -G \
+            "https://nyamnyam2-back.onrender.com/cron/send-feedback" \
+            --data-urlencode "time=야식" \
+            -w "\nHTTP_STATUS=%{http_code}\n"
+          echo "== Feedback 야식 end =="
+

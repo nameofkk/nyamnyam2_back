@@ -1,0 +1,20 @@
+name: Reco Lunch (11:00 KST)
+
+on:
+  schedule:
+    - cron: "0 2 * * *"    # 매일 02:00 UTC = 11:00 KST
+  workflow_dispatch:
+
+jobs:
+  call-reco-lunch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call reco 점심
+        run: |
+          echo "== Reco 점심 start =="
+          curl -sS -G \
+            "https://nyamnyam2-back.onrender.com/cron/send-reco" \
+            --data-urlencode "time=점심" \
+            -w "\nHTTP_STATUS=%{http_code}\n"
+          echo "== Reco 점심 end =="
+
