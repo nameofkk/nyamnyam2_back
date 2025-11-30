@@ -306,6 +306,13 @@
       line-height: 1.45;
     }
 
+    .reason {
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: #2563eb;
+      line-height: 1.4;
+    }
+
     .keyword-row {
       display: flex;
       flex-wrap: wrap;
@@ -394,7 +401,7 @@
   <div class="page-wrap">
     <div class="header">
       <div class="header-title">냠냠, 오늘의 맛집 추천🍚</div>
-      <div class="header-sub">냠냠이가 직접 선정한 {{ time }} 맛집 추천 3곳!</div>
+      <div class="header-sub">냠냠이가 직접 선정한 {{ time }} 맛집 추천 3곳! (광고 없이 골라드려요)</div>
       <div class="header-pill">
         <span>AI 위치 기반 추천</span>
         <span>·</span>
@@ -632,6 +639,10 @@
         const mapUrl =
           "/go?phone=" +
           encodeURIComponent(phone || "") +
+          "&time=" +
+          encodeURIComponent(timeOfDay || "") +
+          "&rid=" +
+          encodeURIComponent(item.restaurant_id || "") +
           "&place_id=" +
           encodeURIComponent(item.place_id || "") +
           "&name=" +
@@ -662,6 +673,7 @@
             </div>
             <div class="menu">대표 메뉴: ${item.menu || "정보 없음"}</div>
             <div class="summary">${item.summary || ""}</div>
+            ${item.reason ? `<div class="reason">${item.reason}</div>` : ""}
             <div class="keyword-row">
               ${keywords}
             </div>
@@ -721,6 +733,8 @@
           restaurant_name: item.name,
           category: item.category,
           is_good: isLike,
+          time_of_day: timeOfDay,
+          restaurant_id: item.restaurant_id,
         }),
       })
         .then((r) => r.json())
