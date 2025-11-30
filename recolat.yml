@@ -1,0 +1,14 @@
+name: Reco Dinner (17:00 KST)
+
+on:
+  schedule:
+    - cron: "0 8 * * *"      # 08:00 UTC = 17:00 KST
+  workflow_dispatch:
+
+jobs:
+  call-reco-dinner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /cron/send-reco?time=저녁
+        run: |
+          curl -s "https://nyamnyam2-back.onrender.com/cron/send-reco?time=저녁"
