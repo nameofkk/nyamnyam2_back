@@ -292,13 +292,14 @@
       color: #b26a00;
     }
 
-.menu {
-  font-size: 13px;
-  color: #444;
-  font-weight: 600;
-  margin-top: 4px;
-  margin-bottom: 10px;   /* ✅ 대표메뉴와 파란 글씨 사이 여백 */
-}
+    .menu {
+      font-size: 13px;
+      color: #444;
+      font-weight: 600;
+      margin-top: 4px;
+      margin-bottom: 10px;   /* 대표메뉴와 파란 글씨 사이 여백 */
+    }
+
     .summary {
       font-size: 12px;
       color: #555;
@@ -306,22 +307,22 @@
       line-height: 1.45;
     }
 
-.reason {
-  font-size: 12px;
-  color: #2563eb;
-  line-height: 1.4;
-  margin-top: 4px;
-  margin-bottom: 10px;   /* ✅ 파란 글씨와 태그 사이 여백 */
-  text-align: center;    /* ✅ 중앙 정렬 */
-}
+    .reason {
+      font-size: 12px;
+      color: #2563eb;
+      line-height: 1.4;
+      margin-top: 4px;
+      margin-bottom: 10px;   /* 파란 글씨와 태그 사이 여백 */
+      /* 좌우 정렬은 원래처럼(왼쪽) 유지 */
+    }
 
-.keyword-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-bottom: 8px;
-  justify-content: center; /* ✅ 태그 중앙 정렬 */
-}
+    .keyword-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 8px;
+      /* justify-content 제거 → 좌우 원상복구 */
+    }
 
     .tag {
       font-size: 11px;
@@ -331,13 +332,24 @@
       color: #c0572c;
     }
 
-.kakao-preview {
-  font-size: 11px;
-  color: #777;
-  line-height: 1.4;
-  margin-top: 4px;
-  text-align: center;      /* ✅ 영업시간까지 중앙 정렬 */
-}
+    .kakao-preview {
+      font-size: 11px;
+      color: #777;
+      line-height: 1.4;
+      margin-top: 4px;
+      /* text-align 제거 → 좌우 원상복구 */
+    }
+
+    /* ⭐ 세로 가운데 정렬용 래퍼 */
+    .info-wrap {
+      display: flex;
+      flex-direction: column;
+      justify-content: center; /* 위아래 중앙 정렬 */
+      flex: 1;
+      margin-top: 4px;
+      margin-bottom: 4px;
+    }
+
     .bottom-actions {
       margin-top: auto;
       padding-top: 10px;
@@ -411,7 +423,7 @@
         <span>·</span>
         <span>카카오맵·구글맵 연동</span>
       </div>
-      <!-- ✅ 위치 실패 시 노출되는 안내 문구 -->
+      <!-- 위치 실패 시 노출되는 안내 문구 -->
       <div id="location-notice"
            style="margin-top: 6px; font-size: 12px; color: #c05621; display: none;">
       </div>
@@ -438,8 +450,6 @@
     const signupLonNum = signupLon === "" ? null : Number(signupLon);
     const hasSignupLocationBool = hasSignupLocation === "true";
 
-
-  
     const loadingEl = document.getElementById("loading");
     const loadingMainEl = document.getElementById("loading-main");
     const loadingFactEl = document.getElementById("loading-fact");
@@ -675,15 +685,20 @@
               <span class="badge">${item.category || "기타"}</span>
               ${ratingText !== "-" ? `<span class="badge rating">★ ${ratingText}</span>` : ""}
             </div>
-            <div class="menu">대표 메뉴: ${item.menu || "정보 없음"}</div>
-            <div class="summary">${item.summary || ""}</div>
-            ${item.reason ? `<div class="reason">${item.reason}</div>` : ""}
-            <div class="keyword-row">
-              ${keywords}
+
+            <!-- 세로 중앙정렬되는 정보 영역 -->
+            <div class="info-wrap">
+              <div class="menu">대표 메뉴: ${item.menu || "정보 없음"}</div>
+              <div class="summary">${item.summary || ""}</div>
+              ${item.reason ? `<div class="reason">${item.reason}</div>` : ""}
+              <div class="keyword-row">
+                ${keywords}
+              </div>
+              <div class="kakao-preview">
+                ${kakaoInfo}
+              </div>
             </div>
-            <div class="kakao-preview">
-              ${kakaoInfo}
-            </div>
+
             <div class="bottom-actions">
               <div class="btn-row">
                 <button class="btn btn-like">👍 좋아요</button>
