@@ -344,7 +344,7 @@ def kakao_keyword_search(query, x, y, radius=1500, size=3):
         "radius": radius,
         "size": size,
     }
-    resp = requests.get(url, headers=headers, params=params, timeout=5)
+    resp = requests.get(url, headers=headers, params=params, timeout=2)
     resp.raise_for_status()
     return resp.json()
 
@@ -402,7 +402,7 @@ def match_kakao_place_by_location(name, lat, lon, radius=100):
             "category_group_code": "FD6"
         }
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=5)
+            resp = requests.get(url, headers=headers, params=params, timeout=2)
             resp.raise_for_status()
             data = resp.json()
             docs = data.get("documents", [])
@@ -438,7 +438,7 @@ def get_kakao_basic_info(place_id):
         "Referer": "https://map.kakao.com/"
     }
     try:
-        resp = requests.get(url, headers=headers, timeout=5)
+        resp = requests.get(url, headers=headers, timeout=2)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
@@ -3359,6 +3359,10 @@ def api_reco():
                 "is_sponsored": False,
             }
         )
+
+                # 🔻🔻🔻 이 한 줄 추가 🔻🔻🔻
+        if len(candidates) >= 12:
+            break
 
     if not candidates:
         if conn:
