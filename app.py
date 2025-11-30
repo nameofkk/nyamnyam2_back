@@ -471,7 +471,7 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
           name, lat, lon, rating,
           address, open_info, category,
           photo_url, distance_km, reviews,
-          user_rating_count
+          user_rating_count, open_now, open_in_1h
         }, ...
       ]
     """
@@ -489,6 +489,7 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
         "places.userRatingCount",
         "places.shortFormattedAddress",
         "places.currentOpeningHours",
+        "places.regularOpeningHours",
         "places.primaryTypeDisplayName",
         "places.photos",
         "places.reviews",
@@ -531,13 +532,17 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
         plon = loc.get("longitude")
 
         rating = p.get("rating", 0.0)
-        user_rating_count = p.get("userRatingCount", 0)  # ★ 리뷰 수 추가
+        user_rating_count = p.get("userRatingCount", 0)
         address = p.get("shortFormattedAddress") or ""
 
-        # 영업시간 텍스트
+        # ── 영업시간 / 영업 여부 (현재 + 1시간 뒤) ─────────────────
         open_info = ""
+        open_now = None
+        open_in_1h = None
+
         opening = p.get("currentOpeningHours") or p.get("regularOpeningHours")
         if opening:
+            # 1) human readable 텍스트 (카드에 노출용)
             weekday_desc = opening.get("weekdayDescriptions") or []
             closed_days_en = []
             open_ranges = []
@@ -577,6 +582,20 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
                 hours_text = "영업 시간 정보 없음"
 
             open_info = f"휴무 요일: {closed_kr}, 영업 시간: {hours_text}"
+
+            # 2) periods 기반 현재/1시간 뒤 영업 여부 계산
+            periods = opening.get("periods") or []
+            # 한국 서비스용이라 KST(+9) 기준으로 계산
+            now_kst = datetime.utcnow() + timedelta(hours=9)
+            if periods:
+                open_now = _is_open_at(periods, now_kst)
+                open_in_1h = _is_open_at(periods, now_kst + timedelta(hours=1))
+
+            # Google이 openNow도 주면 그대로 활용 (보정용)
+            if open_now is None and "openNow" in opening:
+                open_now = bool(opening.get("openNow"))
+
+        # ───────────────────────────────────────────────────────────
 
         raw_cat = p.get("primaryTypeDisplayName") or ""
         if isinstance(raw_cat, dict):
@@ -628,7 +647,9 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
                 "photo_urls": photo_urls,
                 "distance_km": dist_km,
                 "reviews": reviews,
-                "user_rating_count": user_rating_count,  # ★ 여기까지
+                "user_rating_count": user_rating_count,
+                "open_now": open_now,
+                "open_in_1h": open_in_1h,
             }
         )
 
@@ -964,6 +985,74 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    rlat1, rlon1, rlat2, rlon2 = map(
+        math.radians, [lat1, lon1, lat2, lon2]
+    )
+    dlat = rlat2 - rlat1
+    dlon = rlon2 - rlon1
+
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+
+def _is_open_at(periods, dt):
+    """
+    Google Places currentOpeningHours.regularOpeningHours 의 periods 구조를 이용해서
+    dt 시각에 영업 중인지 판단한다.
+
+    periods 예시 (v1):
+    [
+      {
+        "open": {"day": 0, "hour": 11, "minute": 0},
+        "close": {"day": 0, "hour": 21, "minute": 0}
+      },
+      ...
+    ]
+    day: 0=월요일, 6=일요일 (문서 기준)
+    """
+    if not periods or not isinstance(periods, list):
+        return None
+
+    # dt를 "주 시작(월요일 00:00) 기준 분 단위" 로 변환
+    # (서버는 UTC 기준, 한국 식당만 쓴다 가정하고 KST(+9)로 보정해서 search_google_places 쪽에서 넘김)
+    week_minutes = dt.weekday() * 1440 + dt.hour * 60 + dt.minute
+
+    for period in periods:
+        open_info = period.get("open") or {}
+        if "day" not in open_info or "hour" not in open_info or "minute" not in open_info:
+            continue
+
+        o_day = open_info["day"]
+        o_hour = open_info["hour"]
+        o_minute = open_info["minute"]
+        open_min = o_day * 1440 + o_hour * 60 + o_minute
+
+        close_info = period.get("close")
+        if close_info and "hour" in close_info and "minute" in close_info:
+            c_day = close_info.get("day", o_day)
+            c_hour = close_info["hour"]
+            c_minute = close_info["minute"]
+            close_min = c_day * 1440 + c_hour * 60 + c_minute
+        else:
+            # 닫힘 정보 없으면 24시간 영업으로 간주 (해당 요일 기준)
+            close_min = open_min + 24 * 60
+
+        # 영업 시간이 다음 주로 넘어가는 케이스(심야 영업 등) 처리
+        if close_min <= open_min:
+            close_min += 7 * 1440
+
+        # 주 단위로 한 번, +7일 뒤로 한 번 검사해서 wrap-around 처리
+        for base in (week_minutes, week_minutes + 7 * 1440):
+            if open_min <= base < close_min:
+                return True
+
+    return False
 
 import re
 
@@ -972,29 +1061,46 @@ import re
 # =========================
 
 def extract_menu_from_review(review_text):
-    # 한글 메뉴 키워드 (분식 쪽 강화)
+    """
+    리뷰 텍스트 안에서 '대표 메뉴' 후보를 뽑는다.
+    - 한글 메뉴 키워드
+    - 영어 메뉴 키워드 → 한글 매핑
+    - 딘타이펑(만두/딤섬), 양국(양고기) 케이스 강화
+    """
+    if not review_text:
+        return []
+
+    text = str(review_text)
+
+    # 1) 한글 메뉴 키워드
     menu_keywords = [
         # 한식/분식
         "김치찌개", "된장찌개", "불고기", "삼겹살", "갈비",
         "냉면", "비빔밥", "떡볶이", "라볶이", "튀김", "순대", "김밥",
         "칼국수", "국수",
+
         # 일식
         "초밥", "스시", "라멘", "우동", "돈카츠", "텐동",
-        # 중식
+
+        # 중식 + 딤섬 계열 (딘타이펑 대응)
         "짜장면", "짬뽕", "탕수육", "마라탕",
-        # 양식
+        "만두", "샤오롱바오", "소롱포", "딤섬",
+
+        # 양고기 계열 (양국 등)
+        "양고기", "양꼬치", "양갈비",
+
+        # 양식/기타
         "파스타", "피자", "리조또", "스테이크",
-        # 기타
-        "치킨", "버거", "뷔페"
-        # ❌ 케이크/디저트는 분식집에 섞이는 걸 막기 위해 뺌
+        "치킨", "버거", "뷔페",
     ]
 
     found = []
     for kw in menu_keywords:
-        if kw in review_text:
+        if kw in text:
             found.append(kw)
 
-    # 영어 메뉴 단어 → 한글 매핑 (케이크/디저트 제외)
+    # 2) 영어 메뉴 키워드 → 한글 매핑
+    lower = text.lower()
     eng_map = {
         "sushi": "초밥",
         "ramen": "라멘",
@@ -1008,19 +1114,33 @@ def extract_menu_from_review(review_text):
         "sandwich": "샌드위치",
         "chicken": "치킨",
         "noodle": "면요리",
+        "noodles": "면요리",
         "curry": "카레",
         "coffee": "커피",
-        # "cake": "케이크",   # ← 제거
-        # "dessert": "디저트",# ← 제거
         "buffet": "뷔페",
+
+        # 딤섬/만두 계열 (딘타이펑)
+        "dumpling": "만두",
+        "dumplings": "만두",
+        "xiao long bao": "샤오롱바오",
+        "xiaolongbao": "샤오롱바오",
+        "xialongbao": "샤오롱바오",
+        "dim sum": "딤섬",
+        "dimsum": "딤섬",
+
+        # 양고기 계열 (양국)
+        "lamb": "양고기",
+        "mutton": "양고기",
     }
-    lower = review_text.lower()
+
     for eng, kor in eng_map.items():
         if eng in lower:
             found.append(kor)
 
-    # 중복 제거
-    return list(dict.fromkeys(found))
+    # 3) 중복 제거 + 너무 많으면 상위만 사용
+    found_unique = list(dict.fromkeys(found))
+    return found_unique[:4]
+
 
 
 
@@ -1131,60 +1251,68 @@ def signup():
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
 
   <style>
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       font-family: "Noto Sans KR", sans-serif;
       background: linear-gradient(180deg, #ffeaf5, #e3f0ff);
+      margin: 0;
+      padding: 12px;
       display: flex;
       justify-content: center;
-      align-items: center;
+      align-items: flex-start;
       min-height: 100vh;
-      margin: 0;
     }
 
     .wrap {
-      width: 95%;
+      width: 100%;
       max-width: 480px;
       background: #ffffff;
-      padding: 32px 24px 34px;
-      border-radius: 26px;
+      padding: 24px 18px 26px;
+      border-radius: 20px;
       box-shadow: 0 16px 45px rgba(0, 0, 0, 0.08);
       text-align: center;
     }
 
     .logo {
-      width: 80px;
-      margin: 0 auto 10px;
+      width: 70px;
+      margin: 0 auto 8px;
       display: block;
     }
 
     h1 {
-      font-size: 21px;
+      font-size: 20px;
       margin-bottom: 6px;
+      word-break: keep-all;
+      line-height: 1.4;
     }
 
     .subtitle {
       font-size: 13px;
       color: #666;
-      margin-bottom: 18px;
+      margin-bottom: 16px;
       line-height: 1.6;
+      word-break: keep-all;
     }
 
     .phone-block {
-      margin: 16px 0 14px;
+      margin: 14px 0 12px;
       text-align: left;
     }
 
     .phone-label {
       font-size: 13px;
       color: #555;
-      margin-left: 8%;
+      margin-left: 4px;
+      margin-bottom: 4px;
     }
 
     .phone-input {
-      width: 84%;
-      margin: 6px auto 0;
+      width: 100%;
       display: block;
-      padding: 13px 14px;
+      padding: 11px 14px;
       border-radius: 999px;
       border: 1px solid #ddd;
       font-size: 15px;
@@ -1196,27 +1324,30 @@ def signup():
       font-size: 14px;
       font-weight: 600;
       margin: 14px 0 6px;
-      text-align: center;
+      text-align: left;
     }
 
     .chips-row {
       display: flex;
       flex-wrap: wrap;
-      justify-content: center;
+      justify-content: flex-start;
       gap: 8px;
       margin-bottom: 4px;
     }
 
     .chip {
+      flex: 0 1 calc(50% - 8px);   /* 모바일에서 두 줄 정렬 */
       display: inline-flex;
       align-items: center;
-      gap: 4px;
-      padding: 6px 14px;
+      justify-content: center;
+      gap: 6px;
+      padding: 7px 10px;
       border-radius: 999px;
       border: 1px solid #ddd;
       font-size: 13px;
       cursor: pointer;
       background: #fafafa;
+      white-space: nowrap;
     }
 
     .chip input {
@@ -1228,10 +1359,10 @@ def signup():
     }
 
     .btn {
-      width: 84%;
-      margin: 10px auto 0;
+      width: 100%;
+      margin: 8px auto 0;
       display: block;
-      padding: 12px 0;
+      padding: 11px 0;
       border-radius: 999px;
       border: none;
       font-size: 15px;
@@ -1242,7 +1373,7 @@ def signup():
     .btn-location {
       background: #f4f4f4;
       color: #333;
-      margin-top: 8px;
+      margin-top: 10px;
     }
 
     .btn-submit {
@@ -1256,6 +1387,7 @@ def signup():
       color: #333;
       margin-top: 6px;
       text-align: center;
+      word-break: keep-all;
     }
 
     .location-help {
@@ -1263,21 +1395,22 @@ def signup():
       color: #777;
       margin-top: 8px;
       line-height: 1.5;
+      word-break: keep-all;
+      text-align: left;
     }
 
     .agreements {
-      width: 84%;
-      margin: 10px auto 0;
+      width: 100%;
+      margin: 12px auto 0;
       font-size: 11px;
       color: #777;
-      text-align: center;
+      text-align: left;
       line-height: 1.5;
     }
 
     .agreements label {
       display: inline-flex;
       align-items: flex-start;
-      justify-content: center;
       gap: 6px;
       margin-top: 4px;
     }
@@ -1297,8 +1430,10 @@ def signup():
       font-size: 11px;
       color: #999;
       text-align: center;
+      word-break: keep-all;
     }
 
+    /* 약관 모달 */
     .modal-terms {
       position: fixed;
       inset: 0;
@@ -1344,6 +1479,7 @@ def signup():
       font-size: 12px;
       line-height: 1.6;
       text-align: left;
+      word-break: keep-all;
     }
 
     .modal-terms-close {
@@ -1356,6 +1492,19 @@ def signup():
       color: #fff;
       font-size: 13px;
       cursor: pointer;
+    }
+
+    /* 데스크탑에서 chip 폭 살짝 줄이기 */
+    @media (min-width: 480px) {
+      .chip {
+        flex: 0 0 auto;
+      }
+      .section-title {
+        text-align: center;
+      }
+      .location-help {
+        text-align: center;
+      }
     }
   </style>
 </head>
@@ -1410,12 +1559,11 @@ def signup():
     </label>
   </div>
 
-  </br>
   <button class="btn btn-location" onclick="getLocation()">📍 현재 위치 설정</button>
 
   <p class="location-help">
     기본적으로 현재 위치를 기반으로 주변 맛집을 추천 드리며,<br>
-    현재 위치를 받지 못할 경우, 신청 시 설정한 위치 기반 주변 맛집 안내를 발송 드립니다.<br>
+    현재 위치를 받지 못할 경우, 신청 시 설정한 위치 기반 주변 맛집 안내를 발송 드립니다.
   </p>
 
   <div id="status">아직 위치가 설정되지 않았습니다.</div>
@@ -1551,8 +1699,6 @@ def signup():
     const categories = Array.from(categoryEls).map(el => el.value);
     const alertTimes = Array.from(alertEls).map(el => el.value);
 
-    // 개선본 쪽에서는 /api/save-user 대신 기존 /register를 그대로 쓰는 경우,
-    // 아래 fetch URL만 /register로 맞춰주면 됩니다.
     fetch("/register", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -1576,13 +1722,14 @@ def signup():
     .catch(err => {
       alert("요청 중 오류가 발생했습니다.");
     });
-}
+  }
 </script>
 
 </body>
 </html>
 """
     return render_template_string(html)
+
 
 @app.route("/reco")
 def reco_page():
@@ -2876,9 +3023,10 @@ def api_reco():
     1) Google Places로 주변 음식점 후보 수집
     2) 카카오맵에 실제로 등록된 곳만 필터링 (place_id 없는 곳 제외)
     3) 유저 피드백(좋아요/별로에요)을 반영한 선호 점수 계산
-    4) 최근 2일 내에 이미 추천한 가게는 최대한 제외
-    5) 최종 상위 50개 중 3곳 랜덤 노출
+    4) 최근 2일 내에 이미 추천한 가게는 최대한 제외 (restaurant_id 기준 우선)
+    5) 최종 상위 10개 중 3곳 랜덤 노출
     6) restaurants 테이블에 upsert + recommendation_logs에 restaurant_id 저장
+    7) 현재 영업 중이 아니고, 1시간 뒤에도 영업 중이 아닌 가게는 제외
     """
     data = request.get_json() or {}
     phone = data.get("phone") or ""
@@ -2898,6 +3046,7 @@ def api_reco():
     user_categories = []
     category_prefs = {}
     restaurant_prefs = {}
+    recent_ids_2d = set()
     recent_names_2d = set()
 
     conn = None
@@ -2938,11 +3087,11 @@ def api_reco():
                 conn.rollback()
                 restaurant_prefs = {}
 
-            # 최근 2일간 이미 추천한 가게 목록
+            # 최근 2일간 이미 추천한 가게 목록 (restaurant_id 우선)
             try:
                 cur.execute(
                     """
-                    SELECT restaurant_name
+                    SELECT restaurant_name, restaurant_id
                     FROM recommendation_logs
                     WHERE phone_number = %s
                       AND created_at >= NOW() - INTERVAL '2 days';
@@ -2950,10 +3099,15 @@ def api_reco():
                     (phone,),
                 )
                 recent_rows = cur.fetchall()
-                recent_names_2d = {r[0] for r in recent_rows if r[0]}
+                for name, rid in recent_rows:
+                    if rid is not None:
+                        recent_ids_2d.add(rid)
+                    if name:
+                        recent_names_2d.add(name)
             except Exception as e:
                 print("[API_RECO_RECENT_ERR]", e)
                 conn.rollback()
+                recent_ids_2d = set()
                 recent_names_2d = set()
 
         except Exception as e:
@@ -2962,13 +3116,13 @@ def api_reco():
             cur = None
 
     # 3) Google Places에서 주변 음식점 검색
-    places = search_google_places(lat, lon, radius_m=1500, max_results=20)
+    places = search_google_places(lat, lon, radius_m=1500, max_results=40)
     if not places:
         if conn:
             conn.close()
         return jsonify([])
 
-    # 3-1) 동일한 가게(이름 + 주소 기준) 중복 제거
+    # 3-1) 동일한 가게(이름 + 주소 기준) 1차 중복 제거
     unique_places = []
     seen_keys = set()
     for p in places:
@@ -2978,8 +3132,10 @@ def api_reco():
         seen_keys.add(key)
         unique_places.append(p)
 
-    # 4) 카카오맵에 실제로 등록된 곳만 매칭
+    # 4) 카카오맵에 실제로 등록된 곳만 매칭 + 동일 place_id 재중복 제거
     candidates = []
+    seen_kakao_ids = set()
+
     for p in unique_places:
         plat = p.get("lat")
         plon = p.get("lon")
@@ -2991,8 +3147,55 @@ def api_reco():
         if not kakao_place_id:
             continue
 
+        # 같은 카카오 place_id 는 한 번만 사용
+        if kakao_place_id in seen_kakao_ids:
+            continue
+        seen_kakao_ids.add(kakao_place_id)
+
+        # ── 영업 여부: Kakao 우선, 없으면 Google 정보 사용 ─────────────
+        kakao_open_info = ""
+        is_open_now = None
+
+        try:
+            kakao_basic = get_kakao_basic_info(kakao_place_id)
+        except Exception as e:
+            kakao_basic = None
+            print("[KAKAO_BASIC_INFO_IN_RECO_ERR]", e)
+
+        if kakao_basic:
+            if kakao_basic.get("address"):
+                kakao_addr = kakao_basic.get("address")
+
+            if kakao_basic.get("open_info"):
+                kakao_open_info = kakao_basic.get("open_info")
+
+            raw_flag = kakao_basic.get("is_open")
+            if raw_flag is not None:
+                flag = str(raw_flag).lower()
+                if flag in ("y", "1", "true", "open", "o"):
+                    is_open_now = True
+                elif flag in ("n", "0", "false", "closed", "c"):
+                    is_open_now = False
+
+        # Google open_now / open_in_1h 정보
+        g_open_now = p.get("open_now")
+        g_open_in_1h = p.get("open_in_1h")
+
+        # 현재 영업 여부: Kakao 우선, 없으면 Google
+        if is_open_now is None:
+            is_open_now = g_open_now
+
+        # ★ 1시간 뒤에도 영업 중이 아닐 경우 제외
+        #  - g_open_in_1h 가 False 로 명시되어 있으면 제외
+        if g_open_in_1h is False:
+            continue
+
+        # 화면에 보여줄 영업정보
+        open_info = kakao_open_info or p.get("open_info") or ""
+        # ────────────────────────────────────────────────────────
+
         rating = p.get("rating")
-        user_rating_count = p.get("user_rating_count") or 0  # ★ 리뷰 수
+        user_rating_count = p.get("user_rating_count") or 0
 
         # 거리: 소수점 1자리
         raw_distance = p.get("distance_km")
@@ -3004,7 +3207,6 @@ def api_reco():
                 distance_km = None
 
         address = kakao_addr or p.get("address") or ""
-        open_info = p.get("open_info") or ""
 
         photo_urls = p.get("photo_urls") or []
         photo_url = photo_urls[0] if photo_urls else None
@@ -3081,7 +3283,6 @@ def api_reco():
                 score *= 1.15
                 reasons.append("이 시간대에 만족도가 높은 카테고리예요.")
             elif avg_cat >= 3.0:
-                # 중립
                 pass
             elif avg_cat >= 2.0:
                 score *= 0.7
@@ -3111,7 +3312,7 @@ def api_reco():
             review_text=summary,
         )
 
-        # ★ 여기서 restaurants 테이블 upsert + id 획득
+        # restaurants 테이블 upsert + id 획득
         restaurant_id = None
         if conn and cur:
             try:
@@ -3144,7 +3345,7 @@ def api_reco():
                 "address": address,
                 "open_info": open_info,
                 "score": score,
-                "restaurant_id": restaurant_id,  # ★ pk 저장
+                "restaurant_id": restaurant_id,
                 "reason": reason_text,
                 "is_preferred": is_preferred,
                 "is_ad": False,
@@ -3157,38 +3358,47 @@ def api_reco():
             conn.close()
         return jsonify([])
 
-    # 6) 최근 2일 내에 이미 추천한 가게 제외
+    # 6) 최근 2일 내에 이미 추천한 가게 최대한 제외 (restaurant_id 우선)
     filtered_candidates = []
-    if recent_names_2d:
+    if recent_ids_2d or recent_names_2d:
         for c in candidates:
-            if c["name"] not in recent_names_2d:
-                filtered_candidates.append(c)
+            rid = c.get("restaurant_id")
+            if rid is not None and rid in recent_ids_2d:
+                continue
+            if c["name"] in recent_names_2d:
+                continue
+            filtered_candidates.append(c)
     else:
         filtered_candidates = list(candidates)
 
-    if filtered_candidates:
-        pool = list(filtered_candidates)
-    else:
-        pool = list(candidates)
+    # 후보가 하나도 안 남으면, 다양한 추천을 위해 전체 후보를 사용
+    pool = filtered_candidates if filtered_candidates else list(candidates)
 
     # 최소 3개 채우기
     if len(pool) < 3:
+        existing_ids = {c.get("restaurant_id") for c in pool if c.get("restaurant_id") is not None}
         existing_names = {c["name"] for c in pool}
         for c in candidates:
-            if c["name"] not in existing_names:
-                pool.append(c)
-                existing_names.add(c["name"])
+            rid = c.get("restaurant_id")
+            if rid is not None and rid in existing_ids:
+                continue
+            if c["name"] in existing_names:
+                continue
+            pool.append(c)
+            if rid is not None:
+                existing_ids.add(rid)
+            existing_names.add(c["name"])
             if len(pool) >= 3:
                 break
 
-    # 7) 점수 기준 상위 50개 중 랜덤 3개
+    # 7) 점수 기준 상위 10개 중 랜덤 3개 (다양성 확보)
     pool.sort(key=lambda x: x.get("score", 0), reverse=True)
     top_pool = pool[:10]
     random.shuffle(top_pool)
     picked = top_pool[:3]
 
     for c in picked:
-        c.pop("score", None)  # 점수는 응답에서 제거
+        c.pop("score", None)
 
     # 8) 추천 로그 기록 (restaurant_id 포함)
     if phone and conn and cur:
@@ -3215,6 +3425,7 @@ def api_reco():
         conn.close()
 
     return jsonify(picked)
+
 
 
 
