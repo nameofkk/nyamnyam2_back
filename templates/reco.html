@@ -266,10 +266,32 @@
       flex: 1;
     }
 
+    .card-title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 2px;
+    }
+
     .card-title {
-      font-size: 18px;
+      font-size: 16px;
       font-weight: 700;
-      margin-bottom: 4px;
+      margin-bottom: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .rating-pill {
+      flex-shrink: 0;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #fff7e0;
+      border: 1px solid #ffd28a;
+      font-size: 11px;
+      font-weight: 600;
+      color: #b46900;
     }
 
     .badge-row {
@@ -666,13 +688,14 @@
           </div>
 
           <div class="card-body">
-            <div class="card-title">${item.name || ""}</div>
+            <div class="card-title-row">
+              <div class="card-title">${item.name || ""}</div>
+              ${ratingText !== "-" ? `<div class="rating-pill">★ ${ratingText}</div>` : ""}
+            </div>
             <div class="badge-row">
               <span class="badge">${item.category || "기타"}</span>
-              ${ratingText !== "-" ? `<span class="badge rating">★ ${ratingText}</span>` : ""}
             </div>
-            <div class="menu">대표 메뉴: ${item.menu || "정보 없음"}</div>
-            <div class="summary">${item.summary || ""}</div>
+            <div class="menu">대표 메뉴 · ${item.menu || "정보 없음"}</div>
             ${item.reason ? `<div class="reason">${item.reason}</div>` : ""}
             <div class="keyword-row">
               ${keywords}
