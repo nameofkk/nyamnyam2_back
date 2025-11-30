@@ -131,9 +131,34 @@ def init_db():
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
 
+    # ★ restaurants (name, address) 유니크 인덱스 – upsert용
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_restaurants_name_address
+        ON restaurants (name, address);
+    """)
+
+    # ★ recommendation_logs에 restaurant_id 컬럼 추가 (없으면)
+    try:
+        cur.execute("""
+            ALTER TABLE recommendation_logs
+            ADD COLUMN restaurant_id INTEGER REFERENCES restaurants(id);
+        """)
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback()
+
+    # ★ user_feedback에 restaurant_id 컬럼 추가 (없으면)
+    try:
+        cur.execute("""
+            ALTER TABLE user_feedback
+            ADD COLUMN restaurant_id INTEGER REFERENCES restaurants(id);
+        """)
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback()
+
     conn.commit()
     cur.close()
     conn.close()
+
 
 
 # =========================
@@ -415,7 +440,8 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
         {
           name, lat, lon, rating,
           address, open_info, category,
-          photo_url, distance_km, reviews
+          photo_url, distance_km, reviews,
+          user_rating_count
         }, ...
       ]
     """
@@ -475,10 +501,10 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
         plon = loc.get("longitude")
 
         rating = p.get("rating", 0.0)
-        user_rating_count = p.get("userRatingCount", 0)
+        user_rating_count = p.get("userRatingCount", 0)  # ★ 리뷰 수 추가
         address = p.get("shortFormattedAddress") or ""
 
-        # 영업시간 텍스트: "휴무 요일: ~, 영업 시간: ~" 형식으로 정리
+        # 영업시간 텍스트
         open_info = ""
         opening = p.get("currentOpeningHours") or p.get("regularOpeningHours")
         if opening:
@@ -529,7 +555,7 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
             en_cat = str(raw_cat) if raw_cat is not None else ""
         category = translate_category_to_kr(en_cat)
 
-        # ✅ 사진 여러 장 (최대 5장) URL 생성
+        # 사진 여러 장
         photos = p.get("photos") or []
         photo_urls = []
         for ph in photos[:5]:
@@ -542,7 +568,6 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
             )
             photo_urls.append(url)
 
-        # 기존 호환용 대표 사진 1장 (첫 번째 것)
         photo_url = photo_urls[0] if photo_urls else None
 
         reviews_raw = p.get("reviews") or []
@@ -569,15 +594,16 @@ def search_google_places(lat, lon, radius_m=1500, max_results=20):
                 "address": address,
                 "open_info": open_info,
                 "category": category,
-                "photo_url": photo_url,      # 대표 1장 (기존 호환용)
-                "photo_urls": photo_urls,    # ✅ 슬라이더용 여러 장
                 "photo_url": photo_url,
+                "photo_urls": photo_urls,
                 "distance_km": dist_km,
                 "reviews": reviews,
+                "user_rating_count": user_rating_count,  # ★ 여기까지
             }
         )
 
     return results
+
 
 # ================== ALIGO 공통 유틸 =========================
 
@@ -1709,6 +1735,11 @@ tr:last-child td {
 <h1>냠냠이 관리자 대시보드</h1>
 <p class="small">내부용 통계 페이지입니다. URL과 key는 외부에 공유하지 마세요.</p>
 
+<p class="small">
+  👉 <a href="/admin/restaurants?key={{ admin_key }}">[식당 DB 탭으로 이동]</a>
+</p>
+
+
 <div class="cards">
   <div class="card">
     <div class="card-title">전체 가입자 수</div>
@@ -1834,6 +1865,131 @@ tr:last-child td {
         recent_users=recent_users,
         recent_feedback=recent_feedback,
         admin_key=key,)
+
+@app.route("/admin/restaurants")
+def admin_restaurants():
+    """
+    restaurants 테이블 조회용 관리자 페이지.
+    URL 예시:
+      /admin/restaurants?key=관리자비밀번호
+    """
+    key = request.args.get("key", "")
+    if key != ADMIN_PASSWORD:
+        return "UNAUTHORIZED", 403
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # 최근 저장된 식당 100개 (id 역순)
+    cur.execute(
+        """
+        SELECT id, name, category, address, lat, lon, rating, num_reviews
+        FROM restaurants
+        ORDER BY id DESC
+        LIMIT 100;
+        """
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    html = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>냠냠이 – 식당 DB</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f6f7fb;
+  margin: 0;
+  padding: 16px;
+}
+h1 {
+  margin-top: 0;
+}
+.small {
+  font-size: 12px;
+  color: #777;
+  margin-bottom: 10px;
+}
+a {
+  color: #3366cc;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+}
+th, td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #eee;
+  font-size: 12px;
+}
+th {
+  background: #fafafa;
+  text-align: left;
+}
+tr:last-child td {
+  border-bottom: none;
+}
+td.numeric {
+  text-align: right;
+}
+</style>
+</head>
+<body>
+
+<h1>식당 DB (restaurants)</h1>
+<p class="small">
+  최근 저장된 식당 100개만 보여줍니다.<br>
+  🔙 <a href="/admin?key={{ admin_key }}">[요약 대시보드로 돌아가기]</a>
+</p>
+
+<table>
+  <tr>
+    <th>ID</th>
+    <th>이름</th>
+    <th>카테고리</th>
+    <th>주소</th>
+    <th>위도</th>
+    <th>경도</th>
+    <th>평점</th>
+    <th>리뷰수</th>
+  </tr>
+  {% if not rows %}
+  <tr>
+    <td colspan="8">아직 저장된 식당 데이터가 없습니다.</td>
+  </tr>
+  {% else %}
+    {% for r in rows %}
+    <tr>
+      <td class="numeric">{{ r[0] }}</td> <!-- id -->
+      <td>{{ r[1] }}</td>                <!-- name -->
+      <td>{{ r[2] or '-' }}</td>         <!-- category -->
+      <td>{{ r[3] or '-' }}</td>         <!-- address -->
+      <td class="numeric">{{ r[4] if r[4] is not none else '-' }}</td> <!-- lat -->
+      <td class="numeric">{{ r[5] if r[5] is not none else '-' }}</td> <!-- lon -->
+      <td class="numeric">{{ "%.1f"|format(r[6]) if r[6] is not none else '-' }}</td> <!-- rating -->
+      <td class="numeric">{{ r[7] }}</td> <!-- num_reviews -->
+    </tr>
+    {% endfor %}
+  {% endif %}
+</table>
+
+</body>
+</html>
+"""
+    return render_template_string(html, rows=rows, admin_key=key)
+
 
 @app.route("/admin/users/update", methods=["POST"])
 def admin_update_user():
@@ -2585,6 +2741,35 @@ def test_alimtalk():
 # =========================
 # 위치 기반 추천 API (Google Places + Kakao)
 # =========================
+def upsert_restaurant_and_get_id(cur, name, category, address, lat, lon, rating, num_reviews):
+    """
+    restaurants 테이블에 (name + address) 기준 upsert 하고,
+    해당 row의 id를 리턴한다.
+    """
+    if not name:
+        return None
+
+    addr_val = address or ""
+
+    cur.execute(
+        """
+        INSERT INTO restaurants (name, category, address, lat, lon, rating, num_reviews)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (name, address)
+        DO UPDATE SET
+            category    = EXCLUDED.category,
+            address     = EXCLUDED.address,
+            lat         = EXCLUDED.lat,
+            lon         = EXCLUDED.lon,
+            rating      = EXCLUDED.rating,
+            num_reviews = EXCLUDED.num_reviews
+        RETURNING id;
+        """,
+        (name, category, addr_val, lat, lon, rating, num_reviews),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
 
 @app.route("/api/reco", methods=["POST"])
 def api_reco():
@@ -2596,8 +2781,8 @@ def api_reco():
     2) 카카오맵에 실제로 등록된 곳만 필터링 (place_id 없는 곳 제외)
     3) 유저 피드백(좋아요/별로에요)을 반영한 선호 점수 계산
     4) 최근 2일 내에 이미 추천한 가게는 최대한 제외
-       - 다만 추천할 가게가 더 이상 없으면 다시 포함
-    5) 최종적으로 상위 50개 중에서 3곳을 랜덤 노출
+    5) 최종 상위 50개 중 3곳 랜덤 노출
+    6) restaurants 테이블에 upsert + recommendation_logs에 restaurant_id 저장
     """
     data = request.get_json() or {}
     phone = data.get("phone") or ""
@@ -2697,8 +2882,7 @@ def api_reco():
         seen_keys.add(key)
         unique_places.append(p)
 
-    # 4) 카카오맵에 실제로 등록된 곳만 매칭 (place_id 없는 경우 추천 제외)
-    # 4) 카카오맵에 실제로 등록된 곳만 매칭 (place_id 없는 경우 추천 제외)
+    # 4) 카카오맵에 실제로 등록된 곳만 매칭
     candidates = []
     for p in unique_places:
         plat = p.get("lat")
@@ -2712,8 +2896,9 @@ def api_reco():
             continue
 
         rating = p.get("rating")
+        user_rating_count = p.get("user_rating_count") or 0  # ★ 리뷰 수
 
-        # ✅ 거리: 소수점 첫째 자리까지만
+        # 거리: 소수점 1자리
         raw_distance = p.get("distance_km")
         distance_km = None
         if raw_distance is not None:
@@ -2725,24 +2910,18 @@ def api_reco():
         address = kakao_addr or p.get("address") or ""
         open_info = p.get("open_info") or ""
 
-        # ✅ 여러 장 사진 (최대 5장) 사용
         photo_urls = p.get("photo_urls") or []
-        photo_url = photo_urls[0] if photo_urls else None  # 기존 구조 호환용 대표 1장
+        photo_url = photo_urls[0] if photo_urls else None
 
         category = p.get("category") or ""
 
-
-        # 구글 리뷰 문자열 리스트
         reviews = p.get("reviews") or []
         review_texts = [r for r in reviews if isinstance(r, str)]
 
-        # 가게 이름 정리
         name = name_ko or raw_name or "이름 없음"
 
-        # ✅ 한 줄 리뷰: 한국어 리뷰가 있으면 그걸 사용,
-        #               없으면 영어 리뷰 대신 기본 요약 사용
+        # 한 줄 요약
         if review_texts:
-            # 한글 포함된 리뷰만 우선
             kr_reviews = [txt for txt in review_texts if re.search(r"[가-힣]", txt)]
             if kr_reviews:
                 chosen = kr_reviews[0]
@@ -2751,13 +2930,11 @@ def api_reco():
                     chosen = chosen[:80].rstrip() + "..."
                 summary = chosen
             else:
-                # 한국어 리뷰가 하나도 없으면 기본 요약으로
                 summary = build_summary_text(name, category, rating, distance_km)
         else:
             summary = build_summary_text(name, category, rating, distance_km)
 
-
-        # ✅ 대표 메뉴: 강화된 extract_menu_from_review 사용
+        # 대표 메뉴
         menus = []
         for txt in review_texts:
             menus += extract_menu_from_review(txt)
@@ -2806,6 +2983,24 @@ def api_reco():
             elif avg_rest <= 2.5:
                 score *= 0.2
 
+        # ★ 여기서 restaurants 테이블 upsert + id 획득
+        restaurant_id = None
+        if conn and cur:
+            try:
+                restaurant_id = upsert_restaurant_and_get_id(
+                    cur,
+                    name=name,
+                    category=category,
+                    address=address,
+                    lat=plat,
+                    lon=plon,
+                    rating=rating,
+                    num_reviews=user_rating_count,
+                )
+            except Exception as e:
+                print("[UPSERT_RESTAURANT_ERROR]", e)
+                conn.rollback()
+
         candidates.append(
             {
                 "name": name,
@@ -2814,25 +3009,23 @@ def api_reco():
                 "menu": menu,
                 "summary": summary,
                 "place_id": kakao_place_id,
-                "image_url": photo_url,        # 대표 1장 (기존 카드용)
+                "image_url": photo_url,
                 "distance_km": distance_km,
                 "keywords": keywords,
-                "images": photo_urls,           # ✅ 슬라이더용 여러 장
+                "images": photo_urls,
                 "address": address,
                 "open_info": open_info,
                 "score": score,
+                "restaurant_id": restaurant_id,  # ★ pk 저장
             }
         )
-
-
 
     if not candidates:
         if conn:
             conn.close()
         return jsonify([])
 
-    # 6) 최근 2일 내에 이미 추천한 가게는 최대한 제외
-    # 6) 최근 2일 내에 이미 추천한 가게는 최대한 제외
+    # 6) 최근 2일 내에 이미 추천한 가게 제외
     filtered_candidates = []
     if recent_names_2d:
         for c in candidates:
@@ -2841,13 +3034,12 @@ def api_reco():
     else:
         filtered_candidates = list(candidates)
 
-    # 기본은 최근 2일 안 나온 집들만
     if filtered_candidates:
         pool = list(filtered_candidates)
     else:
         pool = list(candidates)
 
-    # ✅ 최소 3개는 채우기 위해, 부족하면 예전에 추천한 집도 다시 섞어서 포함
+    # 최소 3개 채우기
     if len(pool) < 3:
         existing_names = {c["name"] for c in pool}
         for c in candidates:
@@ -2864,20 +3056,20 @@ def api_reco():
     picked = top_pool[:3]
 
     for c in picked:
-        c.pop("score", None)
+        c.pop("score", None)  # 점수는 응답에서 제거
 
-
-    # 8) 추천 로그 기록
+    # 8) 추천 로그 기록 (restaurant_id 포함)
     if phone and conn and cur:
         try:
             for c in picked:
                 try:
                     cur.execute(
                         """
-                        INSERT INTO recommendation_logs (phone_number, restaurant_name, time_of_day)
-                        VALUES (%s, %s, %s);
+                        INSERT INTO recommendation_logs
+                            (phone_number, restaurant_name, time_of_day, restaurant_id)
+                        VALUES (%s, %s, %s, %s);
                         """,
-                        (phone, c["name"], time_of_day),
+                        (phone, c["name"], time_of_day, c.get("restaurant_id")),
                     )
                 except Exception as e:
                     print("[API_RECO_LOG_ONE_ERR]", e)
@@ -2891,6 +3083,7 @@ def api_reco():
         conn.close()
 
     return jsonify(picked)
+
 
 
 # =========================
