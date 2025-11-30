@@ -1,0 +1,22 @@
+name: Reco Morning (08:00 KST)
+
+on:
+  schedule:
+    # 매일 23:00 UTC = 한국시간 08:00
+    - cron: "0 23 * * *"
+  workflow_dispatch:  # 수동 실행용 (Run workflow 버튼)
+
+jobs:
+  call-reco-morning:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Debug call to nyamnyam2-back
+        run: |
+          echo "== START CURL TEST =="
+          curl -v \
+            -H "User-Agent: gha-curl-test" \
+            "https://nyamnyam2-back.onrender.com/cron/send-reco?time=아침" \
+            -w "\nHTTP_STATUS=%{http_code}\n" \
+            || echo "curl failed with exit code $?"
+          echo "== END CURL TEST =="
