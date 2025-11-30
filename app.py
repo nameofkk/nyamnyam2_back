@@ -3123,7 +3123,7 @@ def api_reco():
             cur = None
 
     # 3) Google Places에서 주변 음식점 검색
-    places = search_google_places(lat, lon, radius_m=1500, max_results=40)
+    places = search_google_places(lat, lon, radius_m=1500, max_results=20)
     if not places:
         if conn:
             conn.close()
