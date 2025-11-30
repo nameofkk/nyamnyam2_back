@@ -9,6 +9,14 @@ jobs:
   call-reco-morning:
     runs-on: ubuntu-latest
     steps:
-      - name: Call /cron/send-reco?time=아침
+      - name: Debug call to nyamnyam2-back
         run: |
-          curl -s "https://nyamnyam2-back.onrender.com/cron/send-reco?time=아침"
+          echo "== START CURL TEST =="
+          curl -v \
+            -H "User-Agent: gha-curl-test" \
+            "https://nyamnyam2-back.onrender.com/cron/send-reco?time=아침" \
+            -w "\nHTTP_STATUS=%{http_code}\n" \
+            || echo "curl failed with exit code $?"
+          echo "== END CURL TEST =="
+
+
