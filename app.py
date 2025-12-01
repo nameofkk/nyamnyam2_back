@@ -812,7 +812,7 @@ def send_welcome_message(phone: str):
 
 
 def send_reco_message(phone: str, time_label: str):
-    """2) 맛집 추천 알림톡 (템플릿코드 UD_8444)"""
+    """2) 맛집 추천 알림톡 (템플릿코드 UD_8535)"""
     if not phone or not time_label:
         return False, {"msg": "PARAM_ERROR"}
 
@@ -825,16 +825,13 @@ def send_reco_message(phone: str, time_label: str):
     # ⚠ 여기서 더 이상 #{time}, #{phone_number}를 넣지 않고
     #    실제 값(time_label, phone)으로 치환해서 보냄
     message = (
-        f"냠냠, 오늘의 추천 {time_label} 맛집이 도착했어요!\n"
+        f"냠냠, 오늘의 추천 {time_label} 맛집이 도착했어요!(밥)\n"
         "\n"
         "오늘은 어떤 음식을 먹어 볼까요?\n"
-        "\n"
-
-        f"알림 받는 연락처: {phone}\n"
     )
 
     return send_alimtalk(
-        "UD_8444",
+        "UD_8535",
         phone,
         subject,
         message,
