@@ -2,7 +2,7 @@ name: Feedback Morning (10:00 KST)
 
 on:
   schedule:
-    - cron: "3 1 * * *"    # 매일 01:00 UTC = 10:00 KST
+    - cron: "5 1 * * *"    # 매일 01:00 UTC = 10:00 KST
   workflow_dispatch:
 
 jobs:
@@ -17,6 +17,7 @@ jobs:
             --data-urlencode "time=아침" \
             -w "\nHTTP_STATUS=%{http_code}\n"
           echo "== Feedback 아침 end =="
+
 
 
 
