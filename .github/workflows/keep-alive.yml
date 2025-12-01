@@ -1,0 +1,20 @@
+name: Keep Alive (Render Ping)
+
+on:
+  # 10분마다 실행 (UTC 기준, 하지만 10분 간격이라 타임존 영향 없음)
+  schedule:
+    - cron: "*/10 * * * *"
+  # 필요하면 수동으로도 한 번 실행해볼 수 있게
+  workflow_dispatch:
+
+jobs:
+  ping-render:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ping Render nyamnyam2-back
+        run: |
+          echo "== Render keep-alive ping start =="
+          curl -sS -o /dev/null -w "HTTP_STATUS=%{http_code}\n" \
+            "https://nyamnyam2-back.onrender.com/"
+          echo "== Render keep-alive ping end =="
