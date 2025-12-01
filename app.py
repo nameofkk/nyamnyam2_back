@@ -185,6 +185,14 @@ def init_db():
         """)
     except psycopg2.errors.DuplicateColumn:
         conn.rollback()
+            # 6) click_logs 에 restaurant_id 컬럼 (없으면 추가)
+    try:
+        cur.execute("""
+            ALTER TABLE click_logs
+            ADD COLUMN restaurant_id INTEGER REFERENCES restaurants(id);
+        """)
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback()
 
     conn.commit()
     cur.close()
@@ -368,30 +376,18 @@ def kakao_category_search(category_group_code, x, y, radius=1500, size=15):
 
 
 def match_kakao_place_by_location(name, lat, lon, radius=300):
-    """
-    Google Places에서 받은 가게 이름 + 좌표를 가지고
-    카카오맵 place_id를 찾는다.
-
-    1순위: 키워드 검색(query=정제된 이름, sort=distance)  - 카테고리 제한 X
-    2순위: 주변 음식점(FD6) + 카페(CE7) 카테고리 검색
-    """
     if not KAKAO_REST_API_KEY:
         return None, None, None
 
-    # 1) 이름 정제: 너무 긴 이름, 파이프(|) 등 잘라주기
     clean_name = None
     if name:
-        # '월화고기 상암점 | Sangam korean bbq restaurant | ...' 이런 형태 방지
         clean_name = re.split(r'[|ㆍ·\-]', str(name))[0].strip()
-        # 너무 길면 Kakao가 400 던질 수 있으니 자르기 (안전하게 40자)
         if len(clean_name) > 40:
             clean_name = clean_name[:40]
 
-    headers = {
-        "Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"
-    }
+    headers = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
 
-    # ✅ 1) 이름 기반 키워드 검색 (카테고리 제한 없이 먼저 시도)
+    # 1) 이름 기반 키워드 검색 (카테고리 제한 없이)
     if clean_name:
         url = "https://dapi.kakao.com/v2/local/search/keyword.json"
         params = {
@@ -400,8 +396,6 @@ def match_kakao_place_by_location(name, lat, lon, radius=300):
             "y": lat,
             "radius": radius,
             "sort": "distance",
-            # ❌ 기존: "category_group_code": "FD6"
-            # → 삭제해서 FD6/CE7/기타 모두 검색되게
         }
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=2)
@@ -417,30 +411,9 @@ def match_kakao_place_by_location(name, lat, lon, radius=300):
         except Exception as e:
             print("[KAKAO_MATCH_KEYWORD_ERROR]", e)
 
-    # ✅ 2) 이름 기반 검색 실패 시, 주변 음식점(FD6) + 카페(CE7) 카테고리로 시도
-    for cat in ("FD6", "CE7"):
-        try:
-            # 반경은 최소 300m 이상으로 넉넉하게
-            cat_data = kakao_category_search(
-                cat,
-                x=lon,
-                y=lat,
-                radius=max(radius, 300),
-                size=3,  # 여러 개 받아오되, kakao_category_search가 거리순 정렬
-            )
-            docs = cat_data.get("documents", [])
-            if not docs:
-                continue
-
-            doc = docs[0]  # 가장 가까운 1개
-            place_name = doc.get("place_name")
-            place_id = doc.get("id")
-            address = doc.get("road_address_name") or doc.get("address_name")
-            return place_name, place_id, address
-        except Exception as e:
-            print(f"[KAKAO_MATCH_CATEGORY_ERROR_{cat}]", e)
-
+    # 2) 이름으로도 못 찾으면, 더 이상 다른 가게를 붙이지 않고 그냥 실패 처리
     return None, None, None
+
 
 
 
@@ -3034,18 +3007,15 @@ def upsert_restaurant_and_get_id(cur, name, category, address, lat, lon, rating,
 @app.route("/api/reco", methods=["POST"])
 def api_reco():
     """
-    위치 기반 맛집 추천 (Google Places + 카카오맵 매칭 버전)
+    위치 기반 맛집 추천 (Google Places + Kakao 보조 매칭)
 
-    주요 기능:
-    1) Google Places로 주변 음식점 후보 수집
-    2) 카카오맵에 실제로 등록된 곳만 필터링 (place_id 없는 곳 제외)
-    3) 유저 피드백(좋아요/별로에요)을 반영한 선호 점수 계산
-    4) 최근 2일 내에 이미 추천한 가게는 최대한 제외 (restaurant_id 기준 우선)
-    5) 최종 상위 10개 중 3곳 랜덤 노출
-    6) restaurants 테이블에 upsert + recommendation_logs에 restaurant_id 저장
-    7) 현재 영업 중이 아니고, 1시간 뒤에도 영업 중이 아닌 가게는 제외
-    8) 디버그용 로그로, 어떤 후보들이 수집/필터/최종 선정됐는지 확인
+    핵심 변경 사항
+    1) Google 기준으로 카드 구성 (가게명/사진/리뷰 = 모두 Google 기준)
+    2) Kakao는 '있으면' 주소/영업시간/카카오맵 place_id만 보조로 사용
+    3) Kakao 매칭에 실패해도 후보에서 절대 제외하지 않음
+    4) Kakao 이름으로 Google 이름을 덮어쓰지 않음 → 이름/사진 엉킴 방지
     """
+
     data = request.get_json() or {}
     phone = data.get("phone") or ""
     time_of_day = data.get("time") or ""
@@ -3060,7 +3030,6 @@ def api_reco():
     except (TypeError, ValueError):
         return jsonify({"error": "위치 정보가 잘못되었습니다."}), 400
 
-    # 기본 요청 정보 로그
     print(
         f"[API_RECO_REQUEST] phone={phone}, time={time_of_day}, "
         f"lat={lat}, lon={lon}"
@@ -3080,7 +3049,7 @@ def api_reco():
             conn = get_conn()
             cur = conn.cursor()
 
-            # 선호 카테고리 (회원 가입 시 선택한 것)
+            # (1) 회원 가입 시 선택한 선호 카테고리
             try:
                 cur.execute(
                     "SELECT preferences_categories FROM users WHERE phone_number = %s;",
@@ -3095,7 +3064,7 @@ def api_reco():
                 print("[API_RECO_USER_PREF_CATS_ERR]", e)
                 conn.rollback()
 
-            # 피드백 기반 (시간대별) 카테고리별 평균 점수
+            # (2) 시간대별 카테고리 선호도
             try:
                 category_prefs = get_user_prefs_by_time(phone, time_of_day, cur)
             except Exception as e:
@@ -3103,7 +3072,7 @@ def api_reco():
                 conn.rollback()
                 category_prefs = {}
 
-            # 피드백 기반 개별 가게별 평균 점수
+            # (3) 개별 가게 선호도
             try:
                 restaurant_prefs = get_user_restaurant_prefs(phone, cur)
             except Exception as e:
@@ -3111,7 +3080,7 @@ def api_reco():
                 conn.rollback()
                 restaurant_prefs = {}
 
-            # 최근 2일간 이미 추천한 가게 목록 (restaurant_id 우선)
+            # (4) 최근 2일간 추천된 가게 목록
             try:
                 cur.execute(
                     """
@@ -3142,7 +3111,6 @@ def api_reco():
     # 3) Google Places에서 주변 음식점 검색
     places = search_google_places(lat, lon, radius_m=1500, max_results=20)
 
-    # 🔍 Google 원본 결과 로그
     print(f"[API_RECO_GOOGLE_RAW] count={len(places)}")
     for p in places:
         try:
@@ -3157,15 +3125,16 @@ def api_reco():
                 p.get("distance_km"),
             )
         except Exception:
-            # 로그에서 에러 나도 추천 로직은 계속 진행
             pass
 
     if not places:
         if conn:
+            if cur:
+                cur.close()
             conn.close()
         return jsonify([])
 
-    # 3-1) 동일한 가게(이름 + 주소 기준) 1차 중복 제거
+    # 3-1) Google 기준 (이름+주소) 중복 제거
     unique_places = []
     seen_keys = set()
     for p in places:
@@ -3175,7 +3144,7 @@ def api_reco():
         seen_keys.add(key)
         unique_places.append(p)
 
-    # 4) 카카오맵에 실제로 등록된 곳만 매칭 + 동일 place_id 재중복 제거
+    # 4) Kakao place와 매칭 (보조용) + 후보 리스트 구성
     candidates = []
     seen_kakao_ids = set()
 
@@ -3186,28 +3155,31 @@ def api_reco():
             continue
 
         raw_name = p.get("name")
+
+        # ───────── Kakao 매칭 (실패해도 그대로 진행) ─────────
         name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(
             raw_name, plat, plon
         )
-        if not kakao_place_id:
-            continue
 
-        # 같은 카카오 place_id 는 한 번만 사용
-        if kakao_place_id in seen_kakao_ids:
-            continue
-        seen_kakao_ids.add(kakao_place_id)
+        # 같은 Kakao place_id가 여러 번 붙을 경우, id만 제거 (후보는 유지)
+        if kakao_place_id and kakao_place_id in seen_kakao_ids:
+            kakao_place_id = None
+        elif kakao_place_id:
+            seen_kakao_ids.add(kakao_place_id)
 
-        # ── 영업 여부: Kakao 우선, 없으면 Google 정보 사용 ─────────────
         kakao_open_info = ""
         is_open_now = None
 
-        try:
-            kakao_basic = get_kakao_basic_info(kakao_place_id)
-        except Exception as e:
-            kakao_basic = None
-            print("[KAKAO_BASIC_INFO_IN_RECO_ERR]", e)
+        kakao_basic = None
+        if kakao_place_id:
+            try:
+                kakao_basic = get_kakao_basic_info(kakao_place_id)
+            except Exception as e:
+                kakao_basic = None
+                print("[KAKAO_BASIC_INFO_IN_RECO_ERR]", e)
 
         if kakao_basic:
+            # Kakao에 더 정확한 도로명 주소가 있으면 주소만 업데이트
             if kakao_basic.get("address"):
                 kakao_addr = kakao_basic.get("address")
 
@@ -3222,34 +3194,28 @@ def api_reco():
                 elif flag in ("n", "0", "false", "closed", "c"):
                     is_open_now = False
 
-        # Google open_now / open_in_1h 정보
+        # ───────── Google 영업 여부 (현재/1시간 뒤) ─────────
         g_open_now = p.get("open_now")
         g_open_in_1h = p.get("open_in_1h")
 
-        # 현재 영업 여부: Kakao 우선, 없으면 Google
         if is_open_now is None:
             is_open_now = g_open_now
 
-        # ★ 1시간 뒤에도 영업 중이 아닐 경우 제외
-        #  - g_open_in_1h 가 False 로 명시되어 있으면 제외
+        # 1시간 뒤에도 문을 안 여는 곳은 제외 (Google 기준)
         if g_open_in_1h is False:
             continue
 
-        # 화면에 보여줄 영업정보
         open_info = kakao_open_info or p.get("open_info") or ""
-        # ────────────────────────────────────────────────────────
 
+        # ───────── 기본 정보 (Google 기준) ─────────
         rating = p.get("rating")
         user_rating_count = p.get("user_rating_count") or 0
 
-        # 거리: 소수점 1자리
         raw_distance = p.get("distance_km")
-        distance_km = None
-        if raw_distance is not None:
-            try:
-                distance_km = round(float(raw_distance), 1)
-            except (TypeError, ValueError):
-                distance_km = None
+        try:
+            distance_km = round(float(raw_distance), 1) if raw_distance is not None else None
+        except (TypeError, ValueError):
+            distance_km = None
 
         address = kakao_addr or p.get("address") or ""
 
@@ -3261,14 +3227,15 @@ def api_reco():
         reviews = p.get("reviews") or []
         review_texts = [r for r in reviews if isinstance(r, str)]
 
-        name = name_ko or raw_name or "이름 없음"
+        # ✅ 이름은 무조건 Google 기준을 우선
+        #   (Kakao 이름으로 덮어써서 사진/내용이 엉키는 문제 방지)
+        name = raw_name or name_ko or "이름 없음"
 
-        # 한 줄 요약
+        # ───────── 한 줄 요약 ─────────
         if review_texts:
             kr_reviews = [txt for txt in review_texts if re.search(r"[가-힣]", txt)]
             if kr_reviews:
-                chosen = kr_reviews[0]
-                chosen = chosen.replace("\\n", " ").strip()
+                chosen = kr_reviews[0].replace("\\n", " ").strip()
                 if len(chosen) > 80:
                     chosen = chosen[:80].rstrip() + "..."
                 summary = chosen
@@ -3277,7 +3244,7 @@ def api_reco():
         else:
             summary = build_summary_text(name, category, rating, distance_km)
 
-        # 대표 메뉴
+        # ───────── 대표 메뉴 추출 ─────────
         menus = []
         for txt in review_texts:
             menus += extract_menu_from_review(txt)
@@ -3288,14 +3255,13 @@ def api_reco():
         else:
             menu = build_menu_text(name, category)
 
-        # 선호 여부/설명 태그
+        # ───────── 점수 계산 + 선호도 설명 ─────────
         is_preferred = False
         reasons = []
 
         base_rating = rating if rating is not None else 3.0
         base_dist = float(distance_km or 0.0)
 
-        # 리뷰 수에 따른 신뢰도 가중치
         review_count = user_rating_count or 0
         if review_count >= 50:
             review_factor = 1.2
@@ -3308,7 +3274,7 @@ def api_reco():
 
         score = base_rating * 10 * review_factor - base_dist
 
-        # 회원가입 시 선택한 선호 카테고리
+        # (1) 가입 시 선택한 선호 카테고리
         if user_categories and category:
             for uc in user_categories:
                 if uc and uc in category:
@@ -3317,7 +3283,7 @@ def api_reco():
                     reasons.append("회원가입에서 선택한 선호 카테고리와 일치해요.")
                     break
 
-        # 시간대별 카테고리 선호도
+        # (2) 시간대별 카테고리 선호도
         if category_prefs and category in category_prefs:
             avg_cat = category_prefs[category]
             if avg_cat >= 4.5:
@@ -3336,7 +3302,7 @@ def api_reco():
                 score *= 0.4
                 reasons.append("평균 만족도가 낮았던 카테고리라 점수를 낮췄어요.")
 
-        # 개별 가게 선호도
+        # (3) 개별 가게 선호도
         if restaurant_prefs and name in restaurant_prefs:
             avg_rest = restaurant_prefs[name]
             if avg_rest >= 4.0:
@@ -3357,7 +3323,7 @@ def api_reco():
             review_text=summary,
         )
 
-        # restaurants 테이블 upsert + id 획득
+        # ───────── restaurants 테이블 upsert + id 획득 ─────────
         restaurant_id = None
         if conn and cur:
             try:
@@ -3382,7 +3348,7 @@ def api_reco():
                 "rating": rating,
                 "menu": menu,
                 "summary": summary,
-                "place_id": kakao_place_id,
+                "place_id": kakao_place_id,   # 있을 때만 Kakao place_id
                 "image_url": photo_url,
                 "distance_km": distance_km,
                 "keywords": keywords,
@@ -3395,14 +3361,15 @@ def api_reco():
                 "is_preferred": is_preferred,
                 "is_ad": False,
                 "is_sponsored": False,
+                "lat": plat,                 # ← 추가
+                "lon": plon,                 # ← 추가
             }
         )
 
-        # 후보가 너무 많아지는 것 방지 (최대 12개 정도까지만)
+        # 후보 너무 많아지는 것 방지 (최대 12개 정도까지만)
         if len(candidates) >= 12:
             break
 
-    # 🔍 후보 리스트 요약 로그
     print(f"[API_RECO_CANDIDATES] count={len(candidates)}")
     for c in candidates:
         try:
@@ -3423,10 +3390,12 @@ def api_reco():
 
     if not candidates:
         if conn:
+            if cur:
+                cur.close()
             conn.close()
         return jsonify([])
 
-    # 6) 최근 2일 내에 이미 추천한 가게 최대한 제외 (restaurant_id 우선)
+    # 5) 최근 2일 내 추천된 가게 최대한 제외
     filtered_candidates = []
     if recent_ids_2d or recent_names_2d:
         for c in candidates:
@@ -3439,10 +3408,9 @@ def api_reco():
     else:
         filtered_candidates = list(candidates)
 
-    # 후보가 하나도 안 남으면, 다양한 추천을 위해 전체 후보를 사용
     pool = filtered_candidates if filtered_candidates else list(candidates)
 
-    # 최소 3개 채우기
+    # 6) 최소 3개 채우기 (부족하면 다시 candidates에서 보충)
     if len(pool) < 3:
         existing_ids = {
             c.get("restaurant_id") for c in pool if c.get("restaurant_id") is not None
@@ -3461,7 +3429,7 @@ def api_reco():
             if len(pool) >= 3:
                 break
 
-    # 7) 점수 기준 상위 10개 중 랜덤 3개 (다양성 확보)
+    # 7) 점수 기준 상위 10개 중 랜덤 3개
     pool.sort(key=lambda x: x.get("score", 0), reverse=True)
     top_pool = pool[:10]
     random.shuffle(top_pool)
@@ -3470,7 +3438,6 @@ def api_reco():
     for c in picked:
         c.pop("score", None)
 
-    # 🔍 최종 풀/선정 결과 로그
     print(
         f"[API_RECO_POOL] total={len(pool)}, "
         f"top10={len(top_pool)}, picked3={len(picked)}"
@@ -3492,7 +3459,7 @@ def api_reco():
         except Exception:
             pass
 
-    # 8) 추천 로그 기록 (restaurant_id 포함)
+    # 8) 추천 로그 기록
     if phone and conn and cur:
         try:
             for c in picked:
@@ -3514,13 +3481,11 @@ def api_reco():
             conn.rollback()
 
     if conn:
+        if cur:
+            cur.close()
         conn.close()
 
     return jsonify(picked)
-
-
-
-
 
 # =========================
 # 디버그용
@@ -3600,6 +3565,7 @@ def go_kakao_map():
 
     # 3) 모두 없으면 카카오맵 홈
     return redirect("https://map.kakao.com/")
+
 
 @app.route("/my-ip")
 def my_ip():
