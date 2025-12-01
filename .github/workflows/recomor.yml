@@ -2,7 +2,7 @@ name: Reco Morning (08:00 KST)
 
 on:
   schedule:
-    - cron: "0 23 * * *"   # 매일 23:00 UTC = 08:00 KST
+    - cron: "3 23 * * *"   # 매일 23:00 UTC = 08:00 KST
   workflow_dispatch:
 
 jobs:
@@ -17,4 +17,5 @@ jobs:
             --data-urlencode "time=아침" \
             -w "\nHTTP_STATUS=%{http_code}\n"
           echo "== Reco 아침 end =="
+
 
