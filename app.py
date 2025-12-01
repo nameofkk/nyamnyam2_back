@@ -367,13 +367,13 @@ def kakao_category_search(category_group_code, x, y, radius=1500, size=15):
     return resp.json()
 
 
-def match_kakao_place_by_location(name, lat, lon, radius=100):
+def match_kakao_place_by_location(name, lat, lon, radius=300):
     """
     Google Places에서 받은 가게 이름 + 좌표를 가지고
     카카오맵 place_id를 찾는다.
 
-    1순위: 키워드 검색(query=정제된 이름, sort=distance)
-    2순위: 결과 없으면 FD6 카테고리 검색으로 근처 1개라도 잡기
+    1순위: 키워드 검색(query=정제된 이름, sort=distance)  - 카테고리 제한 X
+    2순위: 주변 음식점(FD6) + 카페(CE7) 카테고리 검색
     """
     if not KAKAO_REST_API_KEY:
         return None, None, None
@@ -387,19 +387,21 @@ def match_kakao_place_by_location(name, lat, lon, radius=100):
         if len(clean_name) > 40:
             clean_name = clean_name[:40]
 
-    # 1) 이름 기반 키워드 검색
+    headers = {
+        "Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"
+    }
+
+    # ✅ 1) 이름 기반 키워드 검색 (카테고리 제한 없이 먼저 시도)
     if clean_name:
         url = "https://dapi.kakao.com/v2/local/search/keyword.json"
-        headers = {
-            "Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"
-        }
         params = {
             "query": clean_name,
             "x": lon,
             "y": lat,
             "radius": radius,
             "sort": "distance",
-            "category_group_code": "FD6"
+            # ❌ 기존: "category_group_code": "FD6"
+            # → 삭제해서 FD6/CE7/기타 모두 검색되게
         }
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=2)
@@ -415,20 +417,31 @@ def match_kakao_place_by_location(name, lat, lon, radius=100):
         except Exception as e:
             print("[KAKAO_MATCH_KEYWORD_ERROR]", e)
 
-    # 2) 이름 기반 검색 실패 시, 카테고리(FD6)로 근처 한 곳이라도
-    try:
-        cat_data = kakao_category_search("FD6", x=lon, y=lat, radius=radius, size=1)
-        docs = cat_data.get("documents", [])
-        if docs:
-            doc = docs[0]
+    # ✅ 2) 이름 기반 검색 실패 시, 주변 음식점(FD6) + 카페(CE7) 카테고리로 시도
+    for cat in ("FD6", "CE7"):
+        try:
+            # 반경은 최소 300m 이상으로 넉넉하게
+            cat_data = kakao_category_search(
+                cat,
+                x=lon,
+                y=lat,
+                radius=max(radius, 300),
+                size=3,  # 여러 개 받아오되, kakao_category_search가 거리순 정렬
+            )
+            docs = cat_data.get("documents", [])
+            if not docs:
+                continue
+
+            doc = docs[0]  # 가장 가까운 1개
             place_name = doc.get("place_name")
             place_id = doc.get("id")
             address = doc.get("road_address_name") or doc.get("address_name")
             return place_name, place_id, address
-    except Exception as e:
-        print("[KAKAO_MATCH_CATEGORY_ERROR]", e)
+        except Exception as e:
+            print(f"[KAKAO_MATCH_CATEGORY_ERROR_{cat}]", e)
 
     return None, None, None
+
 
 
 
