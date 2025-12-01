@@ -2,7 +2,7 @@ name: Feedback Lunch (13:00 KST)
 
 on:
   schedule:
-    - cron: "0 4 * * *"    # 매일 04:00 UTC = 13:00 KST
+    - cron: "3 4 * * *"    # 매일 04:00 UTC = 13:00 KST
   workflow_dispatch:
 
 jobs:
@@ -17,4 +17,5 @@ jobs:
             --data-urlencode "time=점심" \
             -w "\nHTTP_STATUS=%{http_code}\n"
           echo "== Feedback 점심 end =="
+
 
