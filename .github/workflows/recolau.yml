@@ -2,7 +2,7 @@ name: Reco Lunch (11:00 KST)
 
 on:
   schedule:
-    - cron: "5 2 * * *"    # 매일 02:00 UTC = 11:00 KST
+    - cron: "0 2 * * *"    # 매일 02:00 UTC = 11:00 KST
   workflow_dispatch:
 
 jobs:

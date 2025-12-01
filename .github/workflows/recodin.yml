@@ -2,7 +2,7 @@ name: Reco Dinner (17:00 KST)
 
 on:
   schedule:
-    - cron: "5 8 * * *"    # 매일 08:05 UTC = 17:05 KST (schedule 리셋용 주석 수정)
+    - cron: "0 8 * * *"    # 매일 08:00 UTC = 17:00 KST
   workflow_dispatch:
 
 jobs:
