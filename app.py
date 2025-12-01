@@ -3031,6 +3031,7 @@ def api_reco():
     5) 최종 상위 10개 중 3곳 랜덤 노출
     6) restaurants 테이블에 upsert + recommendation_logs에 restaurant_id 저장
     7) 현재 영업 중이 아니고, 1시간 뒤에도 영업 중이 아닌 가게는 제외
+    8) 디버그용 로그로, 어떤 후보들이 수집/필터/최종 선정됐는지 확인
     """
     data = request.get_json() or {}
     phone = data.get("phone") or ""
@@ -3045,6 +3046,12 @@ def api_reco():
         lon = float(lon)
     except (TypeError, ValueError):
         return jsonify({"error": "위치 정보가 잘못되었습니다."}), 400
+
+    # 기본 요청 정보 로그
+    print(
+        f"[API_RECO_REQUEST] phone={phone}, time={time_of_day}, "
+        f"lat={lat}, lon={lon}"
+    )
 
     # 2) DB에서 유저 선호/최근 추천 이력 가져오기
     user_categories = []
@@ -3121,6 +3128,25 @@ def api_reco():
 
     # 3) Google Places에서 주변 음식점 검색
     places = search_google_places(lat, lon, radius_m=1500, max_results=20)
+
+    # 🔍 Google 원본 결과 로그
+    print(f"[API_RECO_GOOGLE_RAW] count={len(places)}")
+    for p in places:
+        try:
+            print(
+                "  -",
+                p.get("name"),
+                "/",
+                p.get("shortFormattedAddress") or p.get("address"),
+                "/ rating=",
+                p.get("rating"),
+                "/ dist_km=",
+                p.get("distance_km"),
+            )
+        except Exception:
+            # 로그에서 에러 나도 추천 로직은 계속 진행
+            pass
+
     if not places:
         if conn:
             conn.close()
@@ -3130,7 +3156,7 @@ def api_reco():
     unique_places = []
     seen_keys = set()
     for p in places:
-        key = (p.get("name"), p.get("address"))
+        key = (p.get("name"), p.get("shortFormattedAddress") or p.get("address"))
         if key in seen_keys:
             continue
         seen_keys.add(key)
@@ -3147,7 +3173,9 @@ def api_reco():
             continue
 
         raw_name = p.get("name")
-        name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(raw_name, plat, plon)
+        name_ko, kakao_place_id, kakao_addr = match_kakao_place_by_location(
+            raw_name, plat, plon
+        )
         if not kakao_place_id:
             continue
 
@@ -3357,9 +3385,28 @@ def api_reco():
             }
         )
 
-                # 🔻🔻🔻 이 한 줄 추가 🔻🔻🔻
+        # 후보가 너무 많아지는 것 방지 (최대 12개 정도까지만)
         if len(candidates) >= 12:
             break
+
+    # 🔍 후보 리스트 요약 로그
+    print(f"[API_RECO_CANDIDATES] count={len(candidates)}")
+    for c in candidates:
+        try:
+            print(
+                "  -",
+                c["name"],
+                "/",
+                c.get("address"),
+                "/ rating=",
+                c.get("rating"),
+                "/ dist_km=",
+                c.get("distance_km"),
+                "/ rid=",
+                c.get("restaurant_id"),
+            )
+        except Exception:
+            pass
 
     if not candidates:
         if conn:
@@ -3384,7 +3431,9 @@ def api_reco():
 
     # 최소 3개 채우기
     if len(pool) < 3:
-        existing_ids = {c.get("restaurant_id") for c in pool if c.get("restaurant_id") is not None}
+        existing_ids = {
+            c.get("restaurant_id") for c in pool if c.get("restaurant_id") is not None
+        }
         existing_names = {c["name"] for c in pool}
         for c in candidates:
             rid = c.get("restaurant_id")
@@ -3407,6 +3456,28 @@ def api_reco():
 
     for c in picked:
         c.pop("score", None)
+
+    # 🔍 최종 풀/선정 결과 로그
+    print(
+        f"[API_RECO_POOL] total={len(pool)}, "
+        f"top10={len(top_pool)}, picked3={len(picked)}"
+    )
+    for c in picked:
+        try:
+            print(
+                "  [PICKED]",
+                c["name"],
+                "/",
+                c.get("address"),
+                "/ rating=",
+                c.get("rating"),
+                "/ dist_km=",
+                c.get("distance_km"),
+                "/ rid=",
+                c.get("restaurant_id"),
+            )
+        except Exception:
+            pass
 
     # 8) 추천 로그 기록 (restaurant_id 포함)
     if phone and conn and cur:
@@ -3433,6 +3504,7 @@ def api_reco():
         conn.close()
 
     return jsonify(picked)
+
 
 
 
